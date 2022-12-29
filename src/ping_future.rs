@@ -1,7 +1,8 @@
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Waker};
 use windows::Win32::Foundation::{BOOLEAN, CloseHandle, GetLastError, HANDLE};
 use windows::Win32::System::Threading::{CreateEventA, RegisterWaitForSingleObject, UnregisterWait, WaitForSingleObject, WT_EXECUTEONLYONCE};
@@ -9,6 +10,7 @@ use windows::Win32::System::WindowsProgramming::INFINITE;
 use crate::{MAX_UDP_PACKET, PingApiOutput, PingError};
 
 type AsyncToReply = fn(&[u8]) -> PingApiOutput;
+type AsyncHandler = fn() -> PingApiOutput;
 
 pub struct FutureEchoReplyAsyncState {
     ping_event: HANDLE,
@@ -97,7 +99,7 @@ impl Drop for FutureEchoReplyAsyncState {
 
 enum FutureEchoReplyState {
     Sync(PingApiOutput),
-    Async(RwLock<FutureEchoReplyAsyncState>)
+    Async(RefCell<FutureEchoReplyAsyncState>)
 }
 
 pub struct FutureEchoReply {
@@ -109,7 +111,7 @@ impl FutureEchoReply {
         FutureEchoReply { state: FutureEchoReplyState::Sync(reply) }
     }
     pub fn pending(state: FutureEchoReplyAsyncState) -> FutureEchoReply {
-        FutureEchoReply { state: FutureEchoReplyState::Async(RwLock::new(state)) }
+        FutureEchoReply { state: FutureEchoReplyState::Async(RefCell::new(state)) }
     }
 }
 
@@ -119,7 +121,7 @@ impl Future for FutureEchoReply {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match &self.state {
             FutureEchoReplyState::Sync(reply) => Poll::Ready(reply.to_owned().clone()),
-            FutureEchoReplyState::Async(locker) => locker.write().unwrap().poll(cx)
+            FutureEchoReplyState::Async(state) => state.borrow_mut().poll(cx)
         }
     }
 }

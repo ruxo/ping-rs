@@ -73,11 +73,11 @@ pub type PingApiOutput = Result<PingReply, PingError>;
 
 pub trait PingOps {
     fn echo(&self, buffer: &[u8], timeout: u32, options: Option<&PingOptions>) -> PingApiOutput;
-    fn echo_async(&self, buffer: &[u8], timeout: u32, options: Option<&PingOptions>) -> ping_future::FutureEchoReply;
+    fn echo_async(self, buffer: Vec<u8>, timeout: u32, options: Option<PingOptions>) -> ping_future::FutureEchoReply;
 }
 
-pub fn send_ping_async(addr: &IpAddr, timeout: u32, buffer: &[u8], options: Option<&PingOptions>) -> ping_future::FutureEchoReply {
-    let validation = validate_buffer(buffer);
+pub fn send_ping_async(addr: &IpAddr, timeout: u32, buffer: Vec<u8>, options: Option<PingOptions>) -> ping_future::FutureEchoReply {
+    let validation = validate_buffer(buffer.as_slice());
     if validation.is_err() {
         return ping_future::FutureEchoReply::immediate(Err(validation.err().unwrap()));
     }

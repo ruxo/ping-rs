@@ -52,7 +52,7 @@ impl PingOps for PingV4 {
         let mut reply_buffer: Vec<u8> = Vec::with_capacity(MAX_UDP_PACKET);
         echo_v4(&self.0, self.1, None, buffer, &mut reply_buffer, timeout, options)
     }
-    fn echo_async(&self, buffer: &[u8], timeout: u32, options: Option<&PingOptions>) -> FutureEchoReply {
+    fn echo_async(self, buffer: Vec<u8>, timeout: u32, options: Option<PingOptions>) -> FutureEchoReply {
         fn to_reply(reply_buffer: &[u8]) -> PingApiOutput {
             let reply = reply_buffer.as_ptr() as *const ICMP_ECHO_REPLY;
             unsafe { create_ping_reply_v4(&*reply) }
