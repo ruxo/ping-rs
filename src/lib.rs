@@ -86,10 +86,10 @@ struct FutureEchoReplyAsyncState {
     ping_event: HANDLE,
     event_registration: HANDLE,
 
-    reply_buffer: Pin<Box<[u8; MAX_UDP_PACKET]>>,
+    reply_buffer: Pin<Arc<[u8; MAX_UDP_PACKET]>>,
     to_reply: AsyncToReply,
 
-    waker: Pin<Box<Option<Waker>>>
+    waker: Pin<Arc<Option<Waker>>>
 }
 
 unsafe extern "system" fn reply_callback(data: *mut c_void, _is_timeout: BOOLEAN){
@@ -107,20 +107,29 @@ impl FutureEchoReplyAsyncState {
         let state = FutureEchoReplyAsyncState {
             ping_event,
             event_registration,
-            reply_buffer: Box::pin([0; MAX_UDP_PACKET]),
+            reply_buffer: Arc::pin([0; MAX_UDP_PACKET]),
             to_reply,
-            waker: Box::pin(None)
+            waker: Arc::pin(None)
         };
 
         unsafe {
-            let waker_address = Pin::into_inner(state.waker.clone()).as_ref() as *const Option<Waker> as *const c_void;
             let result = RegisterWaitForSingleObject(&mut event_registration, ping_event,
-                                                     Some(reply_callback),  // callback function for Windows OS
-                                                     Some(waker_address),   // associated state to the callback function
+                                                     Some(reply_callback),                               // callback function for Windows OS
+                                                     Some(state.get_waker_address() as *const c_void),   // associated state to the callback function
                                                      INFINITE, WT_EXECUTEONLYONCE);
             assert!(result.as_bool());
         }
         state
+    }
+
+    fn get_waker_address(&self) -> *const Option<Waker> {
+        Arc::into_raw(Pin::into_inner(self.waker.clone()))
+    }
+    fn get_mut_reply_buffer(&mut self) -> &mut [u8; MAX_UDP_PACKET] {
+        unsafe {
+            let addr = Arc::into_raw(Pin::into_inner(self.reply_buffer.clone())) as *mut [u8; MAX_UDP_PACKET];
+            &mut *addr
+        }
     }
 
     fn poll(&mut self, cx: &Context) -> Poll<PingApiOutput> {
@@ -130,7 +139,8 @@ impl FutureEchoReplyAsyncState {
 
             match state {
                 WAIT_TIMEOUT => {
-                    self.waker.set(Some(cx.waker().clone()));
+                    let addr = self.get_waker_address() as *mut Option<Waker>;
+                    *addr = Some(cx.waker().clone());
                     Poll::Pending
                 },
                 WAIT_OBJECT_0 => Poll::Ready((self.to_reply)(self.reply_buffer.as_slice())),
@@ -246,7 +256,7 @@ impl PingOps for PingV4 {
 
         let mut state = FutureEchoReplyAsyncState::new(to_reply);
 
-        let result = echo_v4(&self.0, self.1, Some(state.ping_event), buffer, state.reply_buffer.as_mut_slice(), timeout, options);
+        let result = echo_v4(&self.0, self.1, Some(state.ping_event), buffer, state.get_mut_reply_buffer(), timeout, options);
         if let Err(PingError::IoPending) = result {
             FutureEchoReply::pending(state)
         }
