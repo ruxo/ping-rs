@@ -185,7 +185,6 @@ impl Future for FutureEchoReply {
     type Output = PingApiOutput;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        println!("polling...");
         match &self.state {
             FutureEchoReplyState::Sync(reply) => Poll::Ready(reply.to_owned().clone()),
             FutureEchoReplyState::Async(locker) => locker.write().unwrap().poll(cx)
@@ -309,25 +308,23 @@ fn create_ping_reply_v4(reply: &ICMP_ECHO_REPLY) -> Result<PingReply, PingError>
             PingError::BadParameter(_) | PingError::IoPending => panic!("Dev bug!")
         }
     };
-    let (rtt, options, buffer) = if ip_status == IpStatus::Success {
+    if ip_status == IpStatus::Success {
         let mut b = vec![0u8; reply.DataSize as usize];
         unsafe {
             let slice = slice_from_raw_parts::<u8>(reply.Data as *const u8, reply.DataSize as usize);
             b.copy_from_slice(&*slice);
         }
-        (reply.RoundTripTime as u64,
-         Some(PingOptions { ttl: reply.Options.Ttl, dont_fragment: (reply.Options.Flags & DONT_FRAGMENT_FLAG) > 0 }),
-         b)
+        let options = Some(PingOptions { ttl: reply.Options.Ttl, dont_fragment: (reply.Options.Flags & DONT_FRAGMENT_FLAG) > 0 });
+        Ok(PingReply {
+            address: IpAddr::V4(Ipv4Addr::from(reply.Address)),
+            options,
+            ip_status,
+            rtt: reply.RoundTripTime as u64,
+            buffer: Arc::new(b)
+        })
     } else {
-        (0, None, Vec::new())
-    };
-    Ok(PingReply {
-        address: IpAddr::V4(Ipv4Addr::from(reply.Address)),
-        options,
-        ip_status,
-        rtt,
-        buffer: Arc::new(buffer)
-    })
+        Err(PingError::IpError(ip_status))
+    }
 }
 
 fn validate_buffer(buffer: &[u8]) -> Result<&[u8], PingError> {
