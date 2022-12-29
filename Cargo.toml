@@ -17,5 +17,6 @@ features = [
     "Win32_System_WindowsProgramming",
     "Win32_Networking_WinSock",
     "Win32_NetworkManagement_IpHelper",
-    "Win32_Security"
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug"
 ]

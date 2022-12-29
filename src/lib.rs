@@ -5,10 +5,12 @@ use std::pin::Pin;
 use std::ptr::{null_mut, slice_from_raw_parts};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll, Waker};
-use windows::core::PCSTR;
-use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED};
+use windows::core::PSTR;
+use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT, WAIT_FAILED, ERROR_IO_PENDING, BOOLEAN};
 use windows::Win32::NetworkManagement::IpHelper::{Icmp6CreateFile, ICMP_ECHO_REPLY, IcmpCloseHandle, IcmpCreateFile, IcmpHandle, IcmpSendEcho2, IP_OPTION_INFORMATION};
-use windows::Win32::System::Threading::{CREATE_EVENT_MANUAL_RESET, CreateEventExA, WaitForSingleObject};
+use windows::Win32::System::Threading::{CreateEventA, RegisterWaitForSingleObject, UnregisterWait, WaitForSingleObject, WT_EXECUTEONLYONCE};
+use windows::Win32::System::Diagnostics::Debug::*;
+use windows::Win32::System::WindowsProgramming::INFINITE;
 
 #[allow(non_snake_case)]
 pub mod IpStatus {
@@ -66,35 +68,72 @@ pub struct PingReply {
 
 #[derive(Debug, Clone)]
 pub enum PingError {
+    BadParameter(&'static str),
     OsError(u32, String),
-    IpError(IpStatus::Type)
+    IpError(IpStatus::Type),
+    IoPending
 }
 
 /// Artificial constraint due to win32 api limitations.
-const MAX_BUFFER_SIZE: u16 = 65500;
+const MAX_BUFFER_SIZE: usize = 65500;
 const MAX_UDP_PACKET: usize = 0xFFFF + 256; // size of ICMP_ECHO_REPLY * 2 + ip header info
 
 type PingApiOutput = Result<PingReply, PingError>;
 
+type AsyncToReply = fn(&[u8]) -> PingApiOutput;
+
 struct FutureEchoReplyAsyncState {
     ping_event: HANDLE,
-    reply_buffer: Vec<u8>,
-    to_reply: fn(&Vec<u8>) -> PingApiOutput,
+    event_registration: HANDLE,
 
-    waker: Option<Waker>
+    reply_buffer: Pin<Box<[u8; MAX_UDP_PACKET]>>,
+    to_reply: AsyncToReply,
+
+    waker: Pin<Box<Option<Waker>>>
+}
+
+unsafe extern "system" fn reply_callback(data: *mut c_void, _is_timeout: BOOLEAN){
+    let waker = &*(data as *const Option<Waker>);
+
+    if waker.is_some() {
+        waker.clone().unwrap().wake();
+    }
 }
 
 impl FutureEchoReplyAsyncState {
+    fn new(to_reply: AsyncToReply) -> FutureEchoReplyAsyncState {
+        let ping_event = unsafe { CreateEventA(None, true, false, None).unwrap() };
+        let mut event_registration = HANDLE::default();
+        let state = FutureEchoReplyAsyncState {
+            ping_event,
+            event_registration,
+            reply_buffer: Box::pin([0; MAX_UDP_PACKET]),
+            to_reply,
+            waker: Box::pin(None)
+        };
+
+        unsafe {
+            let waker_address = Pin::into_inner(state.waker.clone()).as_ref() as *const Option<Waker> as *const c_void;
+            let result = RegisterWaitForSingleObject(&mut event_registration, ping_event,
+                                                     Some(reply_callback),  // callback function for Windows OS
+                                                     Some(waker_address),   // associated state to the callback function
+                                                     INFINITE, WT_EXECUTEONLYONCE);
+            assert!(result.as_bool());
+        }
+        state
+    }
+
     fn poll(&mut self, cx: &Context) -> Poll<PingApiOutput> {
+        assert!(!self.ping_event.is_invalid());
         unsafe {
             let state = WaitForSingleObject(self.ping_event, 0);
 
             match state {
                 WAIT_TIMEOUT => {
-                    self.waker = Some(cx.waker().clone());
+                    self.waker.set(Some(cx.waker().clone()));
                     Poll::Pending
                 },
-                WAIT_OBJECT_0 => Poll::Ready((self.to_reply)(&self.reply_buffer)),
+                WAIT_OBJECT_0 => Poll::Ready((self.to_reply)(self.reply_buffer.as_slice())),
                 WAIT_FAILED => Poll::Ready(Err(PingError::OsError(GetLastError().0, "Wait event failed".to_string()))),
                 _ => Poll::Ready(Err(PingError::OsError(state.0, "Unexpected return code!".to_string())))
             }
@@ -105,10 +144,12 @@ impl FutureEchoReplyAsyncState {
 impl Drop for FutureEchoReplyAsyncState {
     fn drop(&mut self) {
         if !self.ping_event.is_invalid() {
-            println!("close handle");
-            unsafe { CloseHandle(self.ping_event); }
+            unsafe {
+                CloseHandle(self.ping_event);
+                UnregisterWait(self.event_registration);
+            }
         }
-        println!("Handle now is invalid? {}", self.ping_event.is_invalid())
+        self.ping_event = HANDLE::default();
     }
 }
 
@@ -134,6 +175,7 @@ impl Future for FutureEchoReply {
     type Output = PingApiOutput;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        println!("polling...");
         match &self.state {
             FutureEchoReplyState::Sync(reply) => Poll::Ready(reply.to_owned().clone()),
             FutureEchoReplyState::Async(locker) => locker.write().unwrap().poll(cx)
@@ -165,41 +207,52 @@ struct PingV6(Ipv6Addr, IcmpHandle);
 const IP_STATUS_BASE: u32 = 11_000;
 const DONT_FRAGMENT_FLAG: u8 = 2;
 
+fn echo_v4(ip: &Ipv4Addr, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u8], reply_buffer: &mut [u8], timeout: u32, options: Option<&PingOptions>) -> PingApiOutput {
+    let request_data = buffer.as_ptr() as *const c_void;
+    let ip_options = IP_OPTION_INFORMATION {
+        Ttl: options.clone().map(|v| v.ttl).unwrap_or(128),
+        Tos: 0,
+        Flags: options.and_then(|v| if v.dont_fragment { Some(DONT_FRAGMENT_FLAG) } else { None } ).unwrap_or(0),
+        OptionsSize: 0,
+        OptionsData: null_mut()
+    };
+    let ip_options_ptr = &ip_options as *const IP_OPTION_INFORMATION;
+    let reply_buffer_ptr = reply_buffer.as_mut_ptr() as *mut c_void;
+    let error = unsafe {
+        let destination_address = *((&ip.octets() as *const u8) as *const u32);
+        IcmpSendEcho2(handle, event, None, None, destination_address, request_data, buffer.len() as u16,
+                      Some(ip_options_ptr), reply_buffer_ptr, MAX_UDP_PACKET as u32, timeout)
+    };
+    if error == 0 {
+        let win_err = unsafe { GetLastError() };
+        if win_err == ERROR_IO_PENDING { Err(PingError::IoPending) } else { Err(ping_reply_error(win_err.0)) }
+    }
+    else {
+        let reply = reply_buffer_ptr as *mut ICMP_ECHO_REPLY;
+        unsafe { create_ping_reply_v4(&*reply) }
+    }
+}
+
 impl PingOps for PingV4 {
     fn echo(&self, buffer: &[u8], timeout: u32, options: Option<&PingOptions>) -> PingApiOutput {
-        let handle = self.1;
-        let ip = self.0;
-        let request_data = unsafe { buffer.as_ptr() as *const c_void };
-        let ip_options = IP_OPTION_INFORMATION {
-            Ttl: options.clone().map(|v| v.ttl).unwrap_or(128),
-            Tos: 0,
-            Flags: options.and_then(|v| if v.dont_fragment { Some(DONT_FRAGMENT_FLAG) } else { None } ).unwrap_or(0),
-            OptionsSize: 0,
-            OptionsData: null_mut()
-        };
-        let ip_options_ptr = &ip_options as *const IP_OPTION_INFORMATION;
         let mut reply_buffer: Vec<u8> = Vec::with_capacity(MAX_UDP_PACKET);
-        let reply_buffer_ptr = reply_buffer.as_mut_ptr() as *mut c_void;
-        unsafe {
-            let destination_address = *((&ip.octets() as *const u8) as *const u32);
-            let error = IcmpSendEcho2(handle, HANDLE::from(None), None, None, destination_address, request_data, buffer.len() as u16,
-                                      Some(ip_options_ptr), reply_buffer_ptr, MAX_UDP_PACKET as u32, timeout);
-            if error == 0 {
-                Err(ping_reply_error(GetLastError().0))
-            }
-            else {
-                let reply = reply_buffer_ptr as *mut ICMP_ECHO_REPLY;
-                create_ping_reply_v4(&*reply)
-            }
-        }
+        echo_v4(&self.0, self.1, None, buffer, &mut reply_buffer, timeout, options)
     }
     fn echo_async(&self, buffer: &[u8], timeout: u32, options: Option<&PingOptions>) -> FutureEchoReply {
-        fn to_reply(me: &FutureEchoReplyAsyncState) -> PingApiOutput {
-            let reply = me.reply_buffer.as_ptr() as *const ICMP_ECHO_REPLY;
+        fn to_reply(reply_buffer: &[u8]) -> PingApiOutput {
+            let reply = reply_buffer.as_ptr() as *const ICMP_ECHO_REPLY;
             unsafe { create_ping_reply_v4(&*reply) }
         }
 
-        FutureEchoReply::immediate(Err(PingError::OsError(123, "dummy error".to_string())))
+        let mut state = FutureEchoReplyAsyncState::new(to_reply);
+
+        let result = echo_v4(&self.0, self.1, Some(state.ping_event), buffer, state.reply_buffer.as_mut_slice(), timeout, options);
+        if let Err(PingError::IoPending) = result {
+            FutureEchoReply::pending(state)
+        }
+        else {
+            panic!("Unexpected result from echo_v4: {result:?}");
+        }
     }
 }
 
@@ -224,7 +277,16 @@ impl Drop for PingV6 {
 }
 
 fn ping_reply_error(status_code: u32) -> PingError {
-    if status_code < IP_STATUS_BASE { PingError::OsError(status_code, format!("Ping failed ({status_code})")) }
+    if status_code < IP_STATUS_BASE {
+        let mut buffer = [0u8; 32];
+        let s = PSTR::from_raw(buffer.as_mut_ptr());
+        let r = unsafe { FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, None, status_code, 0, s, buffer.len() as u32, None) };
+        PingError::OsError(status_code, if r == 0 {
+            format!("Ping failed ({status_code})")
+        } else {
+            unsafe { s.to_string().unwrap() }
+        })
+    }
     else { PingError::IpError(status_code as i32) }
 }
 
@@ -233,7 +295,8 @@ fn create_ping_reply_v4(reply: &ICMP_ECHO_REPLY) -> Result<PingReply, PingError>
     else {
         match ping_reply_error(reply.Status) {
             v @ PingError::OsError(_, _) => return Err(v),
-            PingError::IpError(v) => v
+            PingError::IpError(v) => v,
+            PingError::BadParameter(_) | PingError::IoPending => panic!("Dev bug!")
         }
     };
     let (rtt, options, buffer) = if ip_status == IpStatus::Success {
@@ -257,13 +320,22 @@ fn create_ping_reply_v4(reply: &ICMP_ECHO_REPLY) -> Result<PingReply, PingError>
     })
 }
 
+fn validate_buffer(buffer: &[u8]) -> Result<&[u8], PingError> {
+    if buffer.len() > MAX_BUFFER_SIZE { Err(PingError::BadParameter("buffer")) } else { Ok(buffer) }
+}
+
 pub fn send_ping_async(addr: &IpAddr, timeout: u32, buffer: &[u8], options: Option<&PingOptions>) -> FutureEchoReply {
+    let validation = validate_buffer(buffer);
+    if validation.is_err() {
+        return FutureEchoReply::immediate(Err(validation.err().unwrap()));
+    }
     let handle_ping = initialize_icmp_handle(addr).unwrap();
     let ops = handle_ping.ops();
     ops.echo_async(buffer, timeout, options)
 }
 
 pub fn send_ping(addr: &IpAddr, timeout: u32, buffer: &[u8], options: Option<&PingOptions>) -> Result<PingReply, PingError> {
+    let buffer = validate_buffer(buffer)?;
     let handle_ping = initialize_icmp_handle(addr)?;
     let ops = handle_ping.ops();
     ops.echo(buffer, timeout, options)
@@ -281,9 +353,4 @@ fn initialize_icmp_handle(addr: &IpAddr) -> Result<PingHandle, PingError> {
         };
         handle.map_err(to_ping_error)
     }
-}
-
-unsafe fn register_wait_handle() -> Result<HANDLE, PingError> {
-    let handle = CreateEventExA(None, PCSTR::null(), CREATE_EVENT_MANUAL_RESET, 0);
-    handle.map_err(to_ping_error)
 }
