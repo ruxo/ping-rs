@@ -1,10 +1,12 @@
 use std::ffi::c_void;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr};
 use std::ptr::{null_mut, slice_from_raw_parts};
 use std::sync::Arc;
+use std::time::Duration;
 use windows::Win32::Foundation::{ERROR_IO_PENDING, GetLastError, HANDLE};
 use windows::Win32::NetworkManagement::IpHelper::{ICMP_ECHO_REPLY, IcmpCloseHandle, IcmpHandle, IcmpSendEcho2, IP_OPTION_INFORMATION};
-use crate::{DONT_FRAGMENT_FLAG, IpStatus, MAX_UDP_PACKET, ping_reply_error, PingApiOutput, PingError, PingOps, PingOptions, PingReply};
+use crate::{DONT_FRAGMENT_FLAG, IpStatus, MAX_UDP_PACKET, ping_reply_error, PingApiOutput, PingError, PingHandle, PingOptions, PingReply};
 use crate::ping_future::{FutureEchoReply, FutureEchoReplyAsyncState};
 
 pub(crate) struct PingV4(Ipv4Addr, IcmpHandle);
@@ -21,7 +23,8 @@ impl Drop for PingV4 {
     }
 }
 
-fn echo_v4(ip: &Ipv4Addr, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u8], reply_buffer: &mut [u8], timeout: u32, options: Option<&PingOptions>) -> PingApiOutput {
+pub(crate) fn echo_v4(ip: &Ipv4Addr, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u8], reply_buffer: &mut [u8], timeout: Duration,
+           options: Option<&PingOptions>) -> PingApiOutput {
     let request_data = buffer.as_ptr() as *const c_void;
     let ip_options = IP_OPTION_INFORMATION {
         Ttl: options.clone().map(|v| v.ttl).unwrap_or(128),
@@ -35,7 +38,7 @@ fn echo_v4(ip: &Ipv4Addr, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u
     let error = unsafe {
         let destination_address = *((&ip.octets() as *const u8) as *const u32);
         IcmpSendEcho2(handle, event, None, None, destination_address, request_data, buffer.len() as u16,
-                      Some(ip_options_ptr), reply_buffer_ptr, MAX_UDP_PACKET as u32, timeout)
+                      Some(ip_options_ptr), reply_buffer_ptr, MAX_UDP_PACKET as u32, timeout.as_millis() as u32)
     };
     if error == 0 {
         let win_err = unsafe { GetLastError() };
@@ -47,27 +50,18 @@ fn echo_v4(ip: &Ipv4Addr, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u
     }
 }
 
-impl PingOps for PingV4 {
-    fn echo(&self, buffer: &[u8], timeout: u32, options: Option<&PingOptions>) -> PingApiOutput {
-        let mut reply_buffer: Vec<u8> = Vec::with_capacity(MAX_UDP_PACKET);
-        echo_v4(&self.0, self.1, None, buffer, &mut reply_buffer, timeout, options)
-    }
-    fn echo_async(self, buffer: Vec<u8>, timeout: u32, options: Option<PingOptions>) -> FutureEchoReply {
-        fn to_reply(reply_buffer: &[u8]) -> PingApiOutput {
-            let reply = reply_buffer.as_ptr() as *const ICMP_ECHO_REPLY;
-            unsafe { create_ping_reply_v4(&*reply) }
-        }
+pub(crate) fn echo(handle: PingHandle, buffer: &[u8], timeout: Duration, options: Option<&PingOptions>) -> PingApiOutput {
+    let mut reply_buffer: Vec<u8> = Vec::with_capacity(MAX_UDP_PACKET);
+    echo_v4(&handle.ipv4(), handle.1, None, buffer, &mut reply_buffer, timeout, options)
+}
 
-        let mut state = FutureEchoReplyAsyncState::new(to_reply);
+pub(crate) fn echo_async<'a>(handle: PingHandle, data: Arc<&'a [u8]>, timeout: Duration, options: Option<PingOptions>) -> impl Future<Output=PingApiOutput> + 'a {
+    FutureEchoReply::pending(FutureEchoReplyAsyncState::<'a>::new(handle, data, timeout, options))
+}
 
-        let result = echo_v4(&self.0, self.1, Some(state.ping_event()), buffer, state.mut_reply_buffer(), timeout, options);
-        if let Err(PingError::IoPending) = result {
-            FutureEchoReply::pending(state)
-        }
-        else {
-            panic!("Unexpected result from echo_v4: {result:?}");
-        }
-    }
+pub(crate) fn to_reply(reply_buffer: &[u8]) -> PingApiOutput {
+    let reply = reply_buffer.as_ptr() as *const ICMP_ECHO_REPLY;
+    unsafe { create_ping_reply_v4(&*reply) }
 }
 
 fn create_ping_reply_v4(reply: &ICMP_ECHO_REPLY) -> Result<PingReply, PingError> {

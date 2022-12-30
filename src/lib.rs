@@ -1,11 +1,15 @@
+extern crate core;
+
 mod ping_future;
 mod ping_v4;
 mod ping_v6;
 
-use std::net::{IpAddr};
+use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc};
+use std::time::Duration;
 use windows::core::PSTR;
-use windows::Win32::NetworkManagement::IpHelper::{Icmp6CreateFile, IcmpCreateFile};
+use windows::Win32::NetworkManagement::IpHelper::{Icmp6CreateFile, IcmpCloseHandle, IcmpCreateFile, IcmpHandle};
 use windows::Win32::System::Diagnostics::Debug::*;
 
 #[allow(non_snake_case)]
@@ -71,42 +75,51 @@ pub enum PingError {
 
 pub type PingApiOutput = Result<PingReply, PingError>;
 
-pub trait PingOps {
-    fn echo(&self, buffer: &[u8], timeout: u32, options: Option<&PingOptions>) -> PingApiOutput;
-    fn echo_async(self, buffer: Vec<u8>, timeout: u32, options: Option<PingOptions>) -> ping_future::FutureEchoReply;
-}
-
-pub fn send_ping_async(addr: &IpAddr, timeout: u32, buffer: Vec<u8>, options: Option<PingOptions>) -> ping_future::FutureEchoReply {
-    let validation = validate_buffer(buffer.as_slice());
+pub async fn send_ping_async(addr: IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<PingOptions>) -> PingApiOutput {
+    let validation = validate_buffer(data.as_ref());
     if validation.is_err() {
-        return ping_future::FutureEchoReply::immediate(Err(validation.err().unwrap()));
+        return Err(validation.err().unwrap());
     }
-    let handle_ping = initialize_icmp_handle(addr).unwrap();
-    let ops = handle_ping.ops();
-    ops.echo_async(buffer, timeout, options)
+    let handle = initialize_icmp_handle(addr).unwrap();
+    match handle.ip() {
+        IpAddr::V4(_) => ping_v4::echo_async(handle, data, timeout, options).await,
+        IpAddr::V6(_) => ping_v6::echo_async(handle, data, timeout, options).await
+    }
 }
 
-pub fn send_ping(addr: &IpAddr, timeout: u32, buffer: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
-    let buffer = validate_buffer(buffer)?;
-    let handle_ping = initialize_icmp_handle(addr)?;
-    let ops = handle_ping.ops();
-    ops.echo(buffer, timeout, options)
+pub fn send_ping(addr: IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
+    let _ = validate_buffer(data)?;
+    let handle = initialize_icmp_handle(addr)?;
+    match handle.ip() {
+        IpAddr::V4(_) => ping_v4::echo(handle, data, timeout, options),
+        IpAddr::V6(_) => ping_v6::echo(handle, data, timeout, options)
+    }
 }
 
 /// Artificial constraint due to win32 api limitations.
 const MAX_BUFFER_SIZE: usize = 65500;
 const MAX_UDP_PACKET: usize = 0xFFFF + 256; // size of ICMP_ECHO_REPLY * 2 + ip header info
 
-enum PingHandle {
-    V4(ping_v4::PingV4), V6(ping_v6::PingV6)
+pub struct PingHandle(IpAddr, IcmpHandle);
+
+impl PingHandle {
+    fn ip(&self) -> &IpAddr {
+        &self.0
+    }
+    fn ipv4(&self) -> Ipv4Addr {
+        if let IpAddr::V4(ip) = self.0 { ip }
+        else { panic!("Not IPv4") }
+    }
+    fn ipv6(&self) -> Ipv6Addr {
+        if let IpAddr::V6(ip) = self.0 { ip }
+        else { panic!("Not IPv6") }
+    }
 }
 
-impl<'a> PingHandle {
-    fn ops(&self) -> &dyn PingOps {
-        match self {
-            PingHandle::V4(v) => v,
-            PingHandle::V6(v) => v
-        }
+impl Drop for PingHandle {
+    fn drop(&mut self) {
+        let result = unsafe { IcmpCloseHandle(self.1) };
+        assert!(result.as_bool());
     }
 }
 
@@ -136,11 +149,11 @@ fn to_ping_error(win_err: windows::core::Error) -> PingError {
     PingError::OsError(win_err.code().0 as u32, win_err.message().to_string())
 }
 
-fn initialize_icmp_handle(addr: &IpAddr) -> Result<PingHandle, PingError> {
+fn initialize_icmp_handle(addr: IpAddr) -> Result<PingHandle, PingError> {
     unsafe {
         let handle = match addr {
-            IpAddr::V4(ip) => IcmpCreateFile().map(|h| PingHandle::V4(ping_v4::PingV4::new(ip.clone(), h))),
-            IpAddr::V6(ip) => Icmp6CreateFile().map(|h| PingHandle::V6(ping_v6::PingV6::new(ip.clone(), h)))
+            IpAddr::V4(_) => IcmpCreateFile().map(|h| PingHandle(addr, h)),
+            IpAddr::V6(_) => Icmp6CreateFile().map(|h| PingHandle(addr, h))
         };
         handle.map_err(to_ping_error)
     }
