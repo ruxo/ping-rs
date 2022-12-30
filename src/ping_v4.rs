@@ -5,23 +5,9 @@ use std::ptr::{null_mut, slice_from_raw_parts};
 use std::sync::Arc;
 use std::time::Duration;
 use windows::Win32::Foundation::{ERROR_IO_PENDING, GetLastError, HANDLE};
-use windows::Win32::NetworkManagement::IpHelper::{ICMP_ECHO_REPLY, IcmpCloseHandle, IcmpHandle, IcmpSendEcho2, IP_OPTION_INFORMATION};
+use windows::Win32::NetworkManagement::IpHelper::{ICMP_ECHO_REPLY, IcmpHandle, IcmpSendEcho2, IP_OPTION_INFORMATION};
 use crate::{DONT_FRAGMENT_FLAG, IpStatus, MAX_UDP_PACKET, ping_reply_error, PingApiOutput, PingError, PingHandle, PingOptions, PingReply};
-use crate::ping_future::{FutureEchoReply, FutureEchoReplyAsyncState};
-
-pub(crate) struct PingV4(Ipv4Addr, IcmpHandle);
-
-impl PingV4 {
-    pub fn new(ip: Ipv4Addr, handle: IcmpHandle) -> PingV4 {
-        Self(ip, handle)
-    }
-}
-
-impl Drop for PingV4 {
-    fn drop(&mut self) {
-        unsafe { IcmpCloseHandle(self.1); }
-    }
-}
+use crate::ping_future::FutureEchoReplyAsyncState;
 
 pub(crate) fn echo_v4(ip: &Ipv4Addr, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u8], reply_buffer: &mut [u8], timeout: Duration,
            options: Option<&PingOptions>) -> PingApiOutput {
@@ -56,7 +42,7 @@ pub(crate) fn echo(handle: PingHandle, buffer: &[u8], timeout: Duration, options
 }
 
 pub(crate) fn echo_async<'a>(handle: PingHandle, data: Arc<&'a [u8]>, timeout: Duration, options: Option<PingOptions>) -> impl Future<Output=PingApiOutput> + 'a {
-    FutureEchoReply::pending(FutureEchoReplyAsyncState::<'a>::new(handle, data, timeout, options))
+    FutureEchoReplyAsyncState::<'a>::new(handle, data, timeout, options)
 }
 
 pub(crate) fn to_reply(reply_buffer: &[u8]) -> PingApiOutput {

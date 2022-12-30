@@ -1,4 +1,3 @@
-use std::cell::{RefCell};
 use std::ffi::c_void;
 use std::future::Future;
 use std::net::IpAddr;
@@ -72,15 +71,20 @@ impl<'a> FutureEchoReplyAsyncState<'a> {
             &mut *addr
         }
     }
+}
 
-    fn poll(&mut self, cx: &Context) -> Poll<PingApiOutput> {
-        if self.ping_event.is_invalid() {
-            (self.ping_event, self.event_registration) = register_event(self.waker_address() as *const c_void);
+impl<'a> Future for FutureEchoReplyAsyncState<'a> {
+    type Output = PingApiOutput;
 
-            let ip = self.handle.ip().clone();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let async_state = self.get_mut();
+        if async_state.ping_event.is_invalid() {
+            (async_state.ping_event, async_state.event_registration) = register_event(async_state.waker_address() as *const c_void);
+
+            let ip = async_state.handle.ip().clone();
             let result = match ip {
-                IpAddr::V4(ip) => ping_v4::echo_v4(&ip, self.handle.1, Some(self.ping_event), self.data.as_ref(), self.mut_reply_buffer(),
-                                                   self.timeout, self.options.as_ref()),
+                IpAddr::V4(ip) => ping_v4::echo_v4(&ip, async_state.handle.1, Some(async_state.ping_event), async_state.data.as_ref(), async_state.mut_reply_buffer(),
+                                                   async_state.timeout, async_state.options.as_ref()),
                 _ => todo!()
             };
             match result {
@@ -89,18 +93,18 @@ impl<'a> FutureEchoReplyAsyncState<'a> {
             }
         }
 
-        let state = unsafe { WaitForSingleObject(self.ping_event, 0) };
+        let state = unsafe { WaitForSingleObject(async_state.ping_event, 0) };
 
         match state {
             WAIT_TIMEOUT => unsafe {
-                let addr = self.waker_address() as *mut Option<Waker>;
+                let addr = async_state.waker_address() as *mut Option<Waker>;
                 *addr = Some(cx.waker().clone());
                 Poll::Pending
             },
-            WAIT_OBJECT_0 => Poll::Ready(match self.handle.ip() {
-                    IpAddr::V4(_) => ping_v4::to_reply(self.reply_buffer.as_slice()),
-                    IpAddr::V6(_) => todo!(),
-                }),
+            WAIT_OBJECT_0 => Poll::Ready(match async_state.handle.ip() {
+                IpAddr::V4(_) => ping_v4::to_reply(async_state.reply_buffer.as_slice()),
+                IpAddr::V6(_) => todo!(),
+            }),
             WAIT_FAILED => Poll::Ready(Err(PingError::OsError(unsafe { GetLastError().0 }, "Wait event failed".to_string()))),
             _ => Poll::Ready(Err(PingError::OsError(state.0, "Unexpected return code!".to_string())))
         }
@@ -120,33 +124,3 @@ impl<'a> Drop for FutureEchoReplyAsyncState<'a> {
         }
     }
 }
-
-enum FutureEchoReplyState<'a> {
-    Sync(PingApiOutput),
-    Async(RefCell<FutureEchoReplyAsyncState<'a>>)
-}
-
-pub struct FutureEchoReply<'a> {
-    state: FutureEchoReplyState<'a>
-}
-
-impl<'a> FutureEchoReply<'a> {
-    pub fn immediate(reply: PingApiOutput) -> FutureEchoReply<'a> {
-        FutureEchoReply { state: FutureEchoReplyState::Sync(reply) }
-    }
-    pub fn pending(state: FutureEchoReplyAsyncState<'a>) -> FutureEchoReply<'a> {
-        FutureEchoReply { state: FutureEchoReplyState::Async(RefCell::new(state)) }
-    }
-}
-
-impl<'a> Future for FutureEchoReply<'a> {
-    type Output = PingApiOutput;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match &self.state {
-            FutureEchoReplyState::Sync(reply) => Poll::Ready(reply.to_owned().clone()),
-            FutureEchoReplyState::Async(state) => state.borrow_mut().poll(cx)
-        }
-    }
-}
-

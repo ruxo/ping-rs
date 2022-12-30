@@ -4,7 +4,6 @@ mod ping_future;
 mod ping_v4;
 mod ping_v6;
 
-use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc};
 use std::time::Duration;
