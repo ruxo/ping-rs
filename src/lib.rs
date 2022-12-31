@@ -2,10 +2,7 @@
 
 extern crate core;
 
-mod ping_future;
-mod ping_common;
-mod ping_v4;
-mod ping_v6;
+mod windows_ping;
 
 use std::net::IpAddr;
 
@@ -70,4 +67,5 @@ pub enum PingError {
 
 pub type PingApiOutput = Result<PingReply, PingError>;
 
-pub use ping_common::*;
+#[cfg(windows)]
+pub use windows_ping::*;

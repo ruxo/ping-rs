@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::net::{IpAddr, Ipv4Addr};
 use windows::Win32::Foundation::{HANDLE};
 use windows::Win32::NetworkManagement::IpHelper::{ICMP_ECHO_REPLY, IcmpHandle, IcmpSendEcho2, IP_OPTION_INFORMATION};
-use crate::ping_common::{IcmpEcho, PingRawReply};
+use crate::windows_ping::{IcmpEcho, PingRawReply};
 
 impl IcmpEcho for Ipv4Addr {
     fn send(&self, handle: IcmpHandle, event: Option<HANDLE>, data: *const c_void, data_len: u16, options: *const IP_OPTION_INFORMATION, reply_buffer: *mut c_void, reply_buffer_len: u32, timeout: u32) -> u32 {

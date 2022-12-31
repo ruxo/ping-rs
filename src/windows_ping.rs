@@ -1,3 +1,9 @@
+#![cfg(windows)]
+
+mod ping_v4;
+mod ping_v6;
+mod ping_future;
+
 use std::ffi::c_void;
 use std::net::IpAddr;
 use std::ptr::null_mut;
@@ -29,7 +35,7 @@ pub async fn send_ping_async(addr: &IpAddr, timeout: Duration, data: Arc<&[u8]>,
         return Err(validation.err().unwrap());
     }
     let handle = initialize_icmp_handle(addr).unwrap();
-    crate::ping_future::FutureEchoReplyAsyncState::new(handle, data, timeout, options).await
+    ping_future::FutureEchoReplyAsyncState::new(handle, data, timeout, options).await
 }
 
 pub(crate) type ReplyBuffer = [u8; MAX_UDP_PACKET];
