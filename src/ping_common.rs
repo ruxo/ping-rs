@@ -11,7 +11,8 @@ use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply};
 
 pub(crate) const MAX_UDP_PACKET: usize = 0xFFFF + 256; // size of ICMP_ECHO_REPLY * 2 + ip header info
 
-pub fn send_ping(addr: IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
+/// Send ICMP Echo package (ping) to the given address.
+pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
     let _ = validate_buffer(data)?;
     let handle = initialize_icmp_handle(addr)?;
     let mut reply_buffer: Vec<u8> = vec![0; MAX_UDP_PACKET];
@@ -20,7 +21,9 @@ pub fn send_ping(addr: IpAddr, timeout: Duration, data: &[u8], options: Option<&
     handle.icmp().create_raw_reply(reply).into()
 }
 
-pub async fn send_ping_async(addr: IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<PingOptions>) -> PingApiOutput {
+/// Asynchronously schedule ICMP Echo package (ping) to the given address. Note that some parameter signatures are different
+/// from [`send_ping`] function, as the caller should manage those parameters' lifetime.
+pub async fn send_ping_async(addr: &IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<&PingOptions>) -> PingApiOutput {
     let validation = validate_buffer(data.as_ref());
     if validation.is_err() {
         return Err(validation.err().unwrap());
@@ -49,18 +52,22 @@ pub(crate) trait IcmpEcho {
     fn create_raw_reply(&self, reply: *mut u8) -> PingRawReply;
 }
 
-pub(crate) struct PingHandle(pub IpAddr, pub(crate) IcmpHandle);
+pub(crate) struct PingHandle<'a>(pub &'a IpAddr, IcmpHandle);
 
-impl PingHandle {
-    pub(crate) fn icmp(&self) -> &dyn IcmpEcho {
+impl<'a> PingHandle<'a> {
+    pub(crate) fn icmp(&self) -> &'a dyn IcmpEcho {
         match &self.0 {
             IpAddr::V4(ip) => ip,
             IpAddr::V6(ip) => ip,
         }
     }
+
+    pub(crate) fn icmp_handle(&self) -> &IcmpHandle {
+        &self.1
+    }
 }
 
-impl Drop for PingHandle {
+impl<'a> Drop for PingHandle<'a> {
     fn drop(&mut self) {
         let result = unsafe { IcmpCloseHandle(self.1) };
         assert!(result.as_bool());
@@ -73,7 +80,7 @@ fn validate_buffer(buffer: &[u8]) -> Result<&[u8], PingError> {
     if buffer.len() > MAX_BUFFER_SIZE { Err(PingError::BadParameter("buffer")) } else { Ok(buffer) }
 }
 
-fn initialize_icmp_handle(addr: IpAddr) -> Result<PingHandle, PingError> {
+fn initialize_icmp_handle(addr: &IpAddr) -> Result<PingHandle, PingError> {
     unsafe {
         let handle = match addr {
             IpAddr::V4(_) => IcmpCreateFile().map(|h| PingHandle(addr, h)),

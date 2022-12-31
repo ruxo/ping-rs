@@ -11,10 +11,10 @@ use crate::{ping_common, PingApiOutput, PingError, PingOptions};
 use crate::ping_common::{MAX_UDP_PACKET, PingHandle};
 
 pub struct FutureEchoReplyAsyncState<'a> {
-    handle: PingHandle,
+    handle: PingHandle<'a>,
     data: Arc<&'a [u8]>,
     timeout: Duration,
-    options: Option<PingOptions>,
+    options: Option<&'a PingOptions>,
 
     ping_event: HANDLE,
     event_registration: HANDLE,
@@ -45,7 +45,7 @@ fn register_event(waker_address: *const c_void) -> (HANDLE, HANDLE) {
 }
 
 impl<'a> FutureEchoReplyAsyncState<'a> {
-    pub(crate) fn new(handle: PingHandle, data: Arc<&'a [u8]>, timeout: Duration, options: Option<PingOptions>) -> Self {
+    pub(crate) fn new(handle: PingHandle<'a>, data: Arc<&'a [u8]>, timeout: Duration, options: Option<&'a PingOptions>) -> Self {
         Self {
             handle,
             data,
@@ -70,9 +70,9 @@ impl<'a> FutureEchoReplyAsyncState<'a> {
     fn start(&mut self) -> Option<Poll<PingApiOutput>> {
         (self.ping_event, self.event_registration) = register_event(self.waker_address() as *const c_void);
 
-        let raw_reply = ping_common::echo(self.handle.icmp(), self.handle.1, Some(self.ping_event), self.data.as_ref(), self.mut_reply_buffer(),
-                                          self.timeout, self.options.as_ref()
-        ).map(|reply| self.handle.icmp().create_raw_reply(reply));
+        let raw_reply = ping_common::echo(self.handle.icmp(), *self.handle.icmp_handle(), Some(self.ping_event), self.data.as_ref(),
+                                          self.mut_reply_buffer(), self.timeout, self.options)
+            .map(|reply| self.handle.icmp().create_raw_reply(reply));
         match raw_reply {
             Err(PingError::IoPending) => None,
             result => Some(Poll::Ready(result.and_then(|x| x.into())))

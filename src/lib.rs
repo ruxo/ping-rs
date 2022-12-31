@@ -1,3 +1,5 @@
+//! Provide ICMP Echo (ping) functionality.
+
 extern crate core;
 
 mod ping_future;
@@ -43,6 +45,9 @@ pub mod IpStatus {
     pub const UnrecognizedNextHeader: Type = 11000 + 43;
     pub const IcmpError: Type = 11000 + 44;
     pub const DestinationScopeMismatch: Type = 11000 + 45;
+
+    // for example, no network interfaces are suitable to route the ping package.
+    pub const GeneralFailure: Type = 11000 + 50;
 }
 
 #[derive(Debug, Clone)]
