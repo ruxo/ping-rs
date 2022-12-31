@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 use std::ffi::c_void;
 use std::net::IpAddr;
 use std::ptr::null_mut;

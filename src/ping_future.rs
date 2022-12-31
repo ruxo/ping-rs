@@ -7,8 +7,8 @@ use std::time::Duration;
 use windows::Win32::Foundation::{BOOLEAN, CloseHandle, GetLastError, HANDLE, WAIT_TIMEOUT, WAIT_OBJECT_0, WAIT_FAILED};
 use windows::Win32::System::Threading::{CreateEventA, RegisterWaitForSingleObject, UnregisterWait, WaitForSingleObject, WT_EXECUTEONLYONCE};
 use windows::Win32::System::WindowsProgramming::INFINITE;
-use crate::{ping_common, PingApiOutput, PingError, PingOptions};
-use crate::ping_common::{MAX_UDP_PACKET, PingHandle};
+use crate::{windows_ping, PingApiOutput, PingError, PingOptions};
+use crate::windows_ping::{MAX_UDP_PACKET, PingHandle};
 
 pub struct FutureEchoReplyAsyncState<'a> {
     handle: PingHandle<'a>,
@@ -20,7 +20,7 @@ pub struct FutureEchoReplyAsyncState<'a> {
     event_registration: HANDLE,
 
     /// A fixed address for ICMP reply
-    reply_buffer: Pin<Arc<ping_common::ReplyBuffer>>,
+    reply_buffer: Pin<Arc<windows_ping::ReplyBuffer>>,
 
     waker: Pin<Arc<Option<Waker>>>,
 }
@@ -70,8 +70,8 @@ impl<'a> FutureEchoReplyAsyncState<'a> {
     fn start(&mut self) -> Option<Poll<PingApiOutput>> {
         (self.ping_event, self.event_registration) = register_event(self.waker_address() as *const c_void);
 
-        let raw_reply = ping_common::echo(self.handle.icmp(), *self.handle.icmp_handle(), Some(self.ping_event), self.data.as_ref(),
-                                          self.mut_reply_buffer(), self.timeout, self.options)
+        let raw_reply = windows_ping::echo(self.handle.icmp(), *self.handle.icmp_handle(), Some(self.ping_event), self.data.as_ref(),
+                                           self.mut_reply_buffer(), self.timeout, self.options)
             .map(|reply| self.handle.icmp().create_raw_reply(reply));
         match raw_reply {
             Err(PingError::IoPending) => None,
