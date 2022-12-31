@@ -10,6 +10,7 @@ const PING_OPTS: PingOptions = PingOptions { ttl: 64, dont_fragment: true };
 
 fn main() {
     let addr = "209.17.116.160".parse().unwrap();
+    // let addr = "::1".parse().unwrap();
     let data = [8; 32];
 
     sync_ping(&addr, &data);

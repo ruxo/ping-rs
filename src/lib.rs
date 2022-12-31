@@ -1,15 +1,16 @@
 extern crate core;
 
 mod ping_future;
+mod ping_common;
 mod ping_v4;
 mod ping_v6;
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::future::Future;
+use std::net::IpAddr;
 use std::sync::{Arc};
 use std::time::Duration;
-use windows::core::PSTR;
 use windows::Win32::NetworkManagement::IpHelper::{Icmp6CreateFile, IcmpCloseHandle, IcmpCreateFile, IcmpHandle};
-use windows::Win32::System::Diagnostics::Debug::*;
+use crate::ping_common::IcmpEcho;
 
 #[allow(non_snake_case)]
 pub mod IpStatus {
@@ -56,13 +57,8 @@ pub struct PingOptions {
 }
 
 #[derive(Debug, Clone)]
-pub struct PingReply {
-    address: IpAddr,
-    options: Option<PingOptions>,
-    ip_status: IpStatus::Type,
-    rtt: u64,
-    buffer: Arc<Vec<u8>>
-}
+#[allow(dead_code)]
+pub struct PingReply { address: IpAddr, rtt: u32, }
 
 #[derive(Debug, Clone)]
 pub enum PingError {
@@ -80,19 +76,20 @@ pub async fn send_ping_async(addr: IpAddr, timeout: Duration, data: Arc<&[u8]>, 
         return Err(validation.err().unwrap());
     }
     let handle = initialize_icmp_handle(addr).unwrap();
-    match handle.ip() {
-        IpAddr::V4(_) => ping_v4::echo_async(handle, data, timeout, options).await,
-        IpAddr::V6(_) => ping_v6::echo_async(handle, data, timeout, options).await
-    }
+    echo_async(handle, data, timeout, options).await
 }
 
 pub fn send_ping(addr: IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
     let _ = validate_buffer(data)?;
     let handle = initialize_icmp_handle(addr)?;
-    match handle.ip() {
-        IpAddr::V4(_) => ping_v4::echo(handle, data, timeout, options),
-        IpAddr::V6(_) => ping_v6::echo(handle, data, timeout, options)
-    }
+    let mut reply_buffer: Vec<u8> = vec![0; MAX_UDP_PACKET];
+
+    let reply = ping_common::echo(handle.icmp(), handle.1, None, data, reply_buffer.as_mut_ptr(), timeout, options)?;
+    handle.icmp().create_raw_reply(reply).into()
+}
+
+fn echo_async<'a>(handle: PingHandle, data: Arc<&'a [u8]>, timeout: Duration, options: Option<PingOptions>) -> impl Future<Output=PingApiOutput> + 'a {
+    ping_future::FutureEchoReplyAsyncState::<'a>::new(handle, data, timeout, options)
 }
 
 /// Artificial constraint due to win32 api limitations.
@@ -102,16 +99,11 @@ const MAX_UDP_PACKET: usize = 0xFFFF + 256; // size of ICMP_ECHO_REPLY * 2 + ip 
 pub struct PingHandle(IpAddr, IcmpHandle);
 
 impl PingHandle {
-    fn ip(&self) -> &IpAddr {
-        &self.0
-    }
-    fn ipv4(&self) -> Ipv4Addr {
-        if let IpAddr::V4(ip) = self.0 { ip }
-        else { panic!("Not IPv4") }
-    }
-    fn ipv6(&self) -> Ipv6Addr {
-        if let IpAddr::V6(ip) = self.0 { ip }
-        else { panic!("Not IPv6") }
+    fn icmp(&self) -> &dyn IcmpEcho {
+        match &self.0 {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(ip) => ip,
+        }
     }
 }
 
@@ -122,23 +114,7 @@ impl Drop for PingHandle {
     }
 }
 
-const IP_STATUS_BASE: u32 = 11_000;
 const DONT_FRAGMENT_FLAG: u8 = 2;
-
-fn ping_reply_error(status_code: u32) -> PingError {
-    if status_code < IP_STATUS_BASE {
-        let mut buffer = [0u8; 32];
-        let s = PSTR::from_raw(buffer.as_mut_ptr());
-        let r = unsafe { FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, None, status_code, 0, s, buffer.len() as u32, None) };
-        PingError::OsError(status_code, if r == 0 {
-            format!("Ping failed ({status_code})")
-        } else {
-            unsafe { s.to_string().unwrap() }
-        })
-    } else {
-        PingError::IpError(status_code)
-    }
-}
 
 fn validate_buffer(buffer: &[u8]) -> Result<&[u8], PingError> {
     if buffer.len() > MAX_BUFFER_SIZE { Err(PingError::BadParameter("buffer")) } else { Ok(buffer) }

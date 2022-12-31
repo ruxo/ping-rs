@@ -1,15 +1,23 @@
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
-use windows::Win32::NetworkManagement::IpHelper::{IcmpCloseHandle, IcmpHandle};
-use crate::{MAX_UDP_PACKET, ping_future, PingApiOutput, PingError, PingHandle, PingOptions, PingReply};
-use crate::ping_future::FutureEchoReplyAsyncState;
+use std::ffi::c_void;
+use std::net::{IpAddr, Ipv6Addr, SocketAddrV6};
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Networking::WinSock::SOCKADDR_IN6;
+use windows::Win32::NetworkManagement::IpHelper::{Icmp6SendEcho2, IcmpHandle, ICMPV6_ECHO_REPLY_LH, IP_OPTION_INFORMATION};
+use crate::ping_common::{IcmpEcho, PingRawReply};
 
-pub(crate) fn echo(handle: PingHandle, buffer: &[u8], timeout: Duration, options: Option<&PingOptions>) -> PingApiOutput {
-    let mut reply_buffer: Vec<u8> = Vec::with_capacity(MAX_UDP_PACKET);
-    todo!()
-}
+impl IcmpEcho for Ipv6Addr {
+    fn send(&self, handle: IcmpHandle, event: Option<HANDLE>, data: *const c_void, data_len: u16, options: *const IP_OPTION_INFORMATION, reply_buffer: *mut c_void, reply_buffer_len: u32, timeout: u32) -> u32 {
+        let source = SOCKADDR_IN6::default();
+        let destination_address = SOCKADDR_IN6::from(SocketAddrV6::new(self.clone().to_owned(), 0, 0, 0));
 
-pub(crate) fn echo_async<'a>(handle: PingHandle, data: Arc<&'a [u8]>, timeout: Duration, options: Option<PingOptions>) -> impl Future<Output=PingApiOutput> + 'a {
-    FutureEchoReplyAsyncState::new(handle, data, timeout, options)
+        unsafe {
+            Icmp6SendEcho2(handle, event, None, None, &source, &destination_address, data, data_len as u16, Some(options),
+                           reply_buffer, reply_buffer_len, timeout)
+        }
+    }
+
+    fn create_raw_reply(&self, reply: *mut u8) -> PingRawReply {
+        let reply = unsafe { *(reply as *const ICMPV6_ECHO_REPLY_LH) };
+        PingRawReply { address: IpAddr::V6(Ipv6Addr::from(reply.Address.sin6_addr)), status: reply.Status, rtt: reply.RoundTripTime, }
+    }
 }

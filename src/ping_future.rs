@@ -1,6 +1,5 @@
 use std::ffi::c_void;
 use std::future::Future;
-use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc};
 use std::task::{Context, Poll, Waker};
@@ -8,9 +7,7 @@ use std::time::Duration;
 use windows::Win32::Foundation::{BOOLEAN, CloseHandle, GetLastError, HANDLE, WAIT_TIMEOUT, WAIT_OBJECT_0, WAIT_FAILED};
 use windows::Win32::System::Threading::{CreateEventA, RegisterWaitForSingleObject, UnregisterWait, WaitForSingleObject, WT_EXECUTEONLYONCE};
 use windows::Win32::System::WindowsProgramming::INFINITE;
-use crate::{MAX_UDP_PACKET, ping_v4, PingApiOutput, PingError, PingHandle, PingOptions};
-
-type ReplyBuffer = [u8; MAX_UDP_PACKET];
+use crate::{MAX_UDP_PACKET, ping_common, PingApiOutput, PingError, PingHandle, PingOptions};
 
 pub struct FutureEchoReplyAsyncState<'a> {
     handle: PingHandle,
@@ -22,7 +19,7 @@ pub struct FutureEchoReplyAsyncState<'a> {
     event_registration: HANDLE,
 
     /// A fixed address for ICMP reply
-    reply_buffer: Pin<Arc<ReplyBuffer>>,
+    reply_buffer: Pin<Arc<ping_common::ReplyBuffer>>,
 
     waker: Pin<Arc<Option<Waker>>>,
 }
@@ -60,15 +57,24 @@ impl<'a> FutureEchoReplyAsyncState<'a> {
         }
     }
 
-    pub fn waker_address(&self) -> *const Option<Waker> {
-        Arc::into_raw(Pin::into_inner(self.waker.clone()))
+    fn waker_address(&self) -> *mut Option<Waker> {
+        Arc::into_raw(Pin::into_inner(self.waker.clone())) as *mut Option<Waker>
     }
 
     /// [`reply_buffer`] is a fixed address, so a mutable reference shouldn't be an issue.
-    pub fn mut_reply_buffer(&self) -> &mut [u8; MAX_UDP_PACKET] {
-        unsafe {
-            let addr = Arc::into_raw(Pin::into_inner(self.reply_buffer.clone())) as *mut [u8; MAX_UDP_PACKET];
-            &mut *addr
+    fn mut_reply_buffer(&self) -> *mut u8 {
+        Arc::into_raw(Pin::into_inner(self.reply_buffer.clone())) as *mut u8
+    }
+
+    fn start(&mut self) -> Option<Poll<PingApiOutput>> {
+        (self.ping_event, self.event_registration) = register_event(self.waker_address() as *const c_void);
+
+        let raw_reply = ping_common::echo(self.handle.icmp(), self.handle.1, Some(self.ping_event), self.data.as_ref(), self.mut_reply_buffer(),
+                                          self.timeout, self.options.as_ref()
+        ).map(|reply| self.handle.icmp().create_raw_reply(reply));
+        match raw_reply {
+            Err(PingError::IoPending) => None,
+            result => Some(Poll::Ready(result.and_then(|x| x.into())))
         }
     }
 }
@@ -78,35 +84,23 @@ impl<'a> Future for FutureEchoReplyAsyncState<'a> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let async_state = self.get_mut();
-        if async_state.ping_event.is_invalid() {
-            (async_state.ping_event, async_state.event_registration) = register_event(async_state.waker_address() as *const c_void);
 
-            let ip = async_state.handle.ip().clone();
-            let result = match ip {
-                IpAddr::V4(ip) => ping_v4::echo_v4(&ip, async_state.handle.1, Some(async_state.ping_event), async_state.data.as_ref(), async_state.mut_reply_buffer(),
-                                                   async_state.timeout, async_state.options.as_ref()),
-                _ => todo!()
-            };
-            match result {
-                Err(PingError::IoPending) => (),
-                _ => return Poll::Ready(result)
-            }
+        // TODO not thread-safe.. but do we need it?
+        if async_state.ping_event.is_invalid() {
+            if let Some(result) = async_state.start() { return result; }
         }
 
-        let state = unsafe { WaitForSingleObject(async_state.ping_event, 0) };
+        let ping_state = unsafe { WaitForSingleObject(async_state.ping_event, 0) };
 
-        match state {
+        match ping_state {
             WAIT_TIMEOUT => unsafe {
-                let addr = async_state.waker_address() as *mut Option<Waker>;
+                let addr = async_state.waker_address();
                 *addr = Some(cx.waker().clone());
                 Poll::Pending
             },
-            WAIT_OBJECT_0 => Poll::Ready(match async_state.handle.ip() {
-                IpAddr::V4(_) => ping_v4::to_reply(async_state.reply_buffer.as_slice()),
-                IpAddr::V6(_) => todo!(),
-            }),
+            WAIT_OBJECT_0 => Poll::Ready(async_state.handle.icmp().create_raw_reply(async_state.mut_reply_buffer()).into()),
             WAIT_FAILED => Poll::Ready(Err(PingError::OsError(unsafe { GetLastError().0 }, "Wait event failed".to_string()))),
-            _ => Poll::Ready(Err(PingError::OsError(state.0, "Unexpected return code!".to_string())))
+            _ => Poll::Ready(Err(PingError::OsError(ping_state.0, "Unexpected return code!".to_string())))
         }
     }
 }
