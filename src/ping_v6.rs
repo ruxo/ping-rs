@@ -18,6 +18,13 @@ impl IcmpEcho for Ipv6Addr {
 
     fn create_raw_reply(&self, reply: *mut u8) -> PingRawReply {
         let reply = unsafe { *(reply as *const ICMPV6_ECHO_REPLY_LH) };
-        PingRawReply { address: IpAddr::V6(Ipv6Addr::from(reply.Address.sin6_addr)), status: reply.Status, rtt: reply.RoundTripTime, }
+
+        // correct byte order..
+        let mut addr = [0; 8];
+        for i in 0..=7 {
+            addr[i] = reply.Address.sin6_addr[i].swap_bytes();
+        }
+
+        PingRawReply { address: IpAddr::V6(Ipv6Addr::from(addr)), status: reply.Status, rtt: reply.RoundTripTime, }
     }
 }
