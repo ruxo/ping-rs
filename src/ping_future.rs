@@ -7,7 +7,8 @@ use std::time::Duration;
 use windows::Win32::Foundation::{BOOLEAN, CloseHandle, GetLastError, HANDLE, WAIT_TIMEOUT, WAIT_OBJECT_0, WAIT_FAILED};
 use windows::Win32::System::Threading::{CreateEventA, RegisterWaitForSingleObject, UnregisterWait, WaitForSingleObject, WT_EXECUTEONLYONCE};
 use windows::Win32::System::WindowsProgramming::INFINITE;
-use crate::{MAX_UDP_PACKET, ping_common, PingApiOutput, PingError, PingHandle, PingOptions};
+use crate::{ping_common, PingApiOutput, PingError, PingOptions};
+use crate::ping_common::{MAX_UDP_PACKET, PingHandle};
 
 pub struct FutureEchoReplyAsyncState<'a> {
     handle: PingHandle,
@@ -44,7 +45,7 @@ fn register_event(waker_address: *const c_void) -> (HANDLE, HANDLE) {
 }
 
 impl<'a> FutureEchoReplyAsyncState<'a> {
-    pub fn new(handle: PingHandle, data: Arc<&'a [u8]>, timeout: Duration, options: Option<PingOptions>) -> Self {
+    pub(crate) fn new(handle: PingHandle, data: Arc<&'a [u8]>, timeout: Duration, options: Option<PingOptions>) -> Self {
         Self {
             handle,
             data,

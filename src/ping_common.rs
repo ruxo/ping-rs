@@ -1,12 +1,33 @@
 use std::ffi::c_void;
 use std::net::IpAddr;
 use std::ptr::null_mut;
+use std::sync::Arc;
 use std::time::Duration;
 use windows::core::PSTR;
 use windows::Win32::Foundation::{ERROR_IO_PENDING, GetLastError, HANDLE};
-use windows::Win32::NetworkManagement::IpHelper::{IcmpHandle, IP_OPTION_INFORMATION, IP_STATUS_BASE};
+use windows::Win32::NetworkManagement::IpHelper::{Icmp6CreateFile, IcmpCloseHandle, IcmpCreateFile, IcmpHandle, IP_OPTION_INFORMATION, IP_STATUS_BASE};
 use windows::Win32::System::Diagnostics::Debug::*;
-use crate::{DONT_FRAGMENT_FLAG, IpStatus, MAX_UDP_PACKET, PingApiOutput, PingError, PingOptions, PingReply};
+use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply};
+
+pub(crate) const MAX_UDP_PACKET: usize = 0xFFFF + 256; // size of ICMP_ECHO_REPLY * 2 + ip header info
+
+pub fn send_ping(addr: IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
+    let _ = validate_buffer(data)?;
+    let handle = initialize_icmp_handle(addr)?;
+    let mut reply_buffer: Vec<u8> = vec![0; MAX_UDP_PACKET];
+
+    let reply = echo(handle.icmp(), handle.1, None, data, reply_buffer.as_mut_ptr(), timeout, options)?;
+    handle.icmp().create_raw_reply(reply).into()
+}
+
+pub async fn send_ping_async(addr: IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<PingOptions>) -> PingApiOutput {
+    let validation = validate_buffer(data.as_ref());
+    if validation.is_err() {
+        return Err(validation.err().unwrap());
+    }
+    let handle = initialize_icmp_handle(addr).unwrap();
+    crate::ping_future::FutureEchoReplyAsyncState::new(handle, data, timeout, options).await
+}
 
 pub(crate) type ReplyBuffer = [u8; MAX_UDP_PACKET];
 
@@ -28,6 +49,41 @@ pub(crate) trait IcmpEcho {
     fn create_raw_reply(&self, reply: *mut u8) -> PingRawReply;
 }
 
+pub(crate) struct PingHandle(pub IpAddr, pub(crate) IcmpHandle);
+
+impl PingHandle {
+    pub(crate) fn icmp(&self) -> &dyn IcmpEcho {
+        match &self.0 {
+            IpAddr::V4(ip) => ip,
+            IpAddr::V6(ip) => ip,
+        }
+    }
+}
+
+impl Drop for PingHandle {
+    fn drop(&mut self) {
+        let result = unsafe { IcmpCloseHandle(self.1) };
+        assert!(result.as_bool());
+    }
+}
+
+/// Artificial constraint due to win32 api limitations.
+const MAX_BUFFER_SIZE: usize = 65500;
+fn validate_buffer(buffer: &[u8]) -> Result<&[u8], PingError> {
+    if buffer.len() > MAX_BUFFER_SIZE { Err(PingError::BadParameter("buffer")) } else { Ok(buffer) }
+}
+
+fn initialize_icmp_handle(addr: IpAddr) -> Result<PingHandle, PingError> {
+    unsafe {
+        let handle = match addr {
+            IpAddr::V4(_) => IcmpCreateFile().map(|h| PingHandle(addr, h)),
+            IpAddr::V6(_) => Icmp6CreateFile().map(|h| PingHandle(addr, h))
+        };
+        handle.map_err(|e| e.code().0 as u32).map_err(ping_reply_error)
+    }
+}
+
+const DONT_FRAGMENT_FLAG: u8 = 2;
 pub(crate) fn echo(destination: &dyn IcmpEcho, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u8], reply_buffer: *mut u8, timeout: Duration,
                       options: Option<&PingOptions>) -> Result<*mut u8, PingError> {
     let request_data = buffer.as_ptr() as *const c_void;

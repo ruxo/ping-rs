@@ -4,7 +4,7 @@ use std::time::Duration;
 use futures::executor::block_on;
 use futures::future::join_all;
 use futures::{FutureExt};
-use ping_rs::{PingOptions, send_ping, send_ping_async};
+use ping_rs::*;
 
 const PING_OPTS: PingOptions = PingOptions { ttl: 64, dont_fragment: true };
 
