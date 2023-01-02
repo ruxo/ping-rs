@@ -19,7 +19,7 @@ pub(crate) const MAX_UDP_PACKET: usize = 0xFFFF + 256; // size of ICMP_ECHO_REPL
 
 /// Send ICMP Echo package (ping) to the given address.
 pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
-    let _ = validate_buffer(data)?;
+    let _ = validate_data_buffer(data)?;
     let handle = initialize_icmp_handle(addr)?;
     let mut reply_buffer: Vec<u8> = vec![0; MAX_UDP_PACKET];
 
@@ -30,7 +30,7 @@ pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<
 /// Asynchronously schedule ICMP Echo package (ping) to the given address. Note that some parameter signatures are different
 /// from [`send_ping`] function, as the caller should manage those parameters' lifetime.
 pub async fn send_ping_async(addr: &IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<&PingOptions>) -> PingApiOutput {
-    let validation = validate_buffer(data.as_ref());
+    let validation = validate_data_buffer(data.as_ref());
     if validation.is_err() {
         return Err(validation.err().unwrap());
     }
@@ -82,8 +82,8 @@ impl<'a> Drop for PingHandle<'a> {
 
 /// Artificial constraint due to win32 api limitations.
 const MAX_BUFFER_SIZE: usize = 65500;
-fn validate_buffer(buffer: &[u8]) -> Result<&[u8], PingError> {
-    if buffer.len() > MAX_BUFFER_SIZE { Err(PingError::BadParameter("buffer")) } else { Ok(buffer) }
+fn validate_data_buffer(data: &[u8]) -> Result<&[u8], PingError> {
+    if data.len() > MAX_BUFFER_SIZE { Err(PingError::DataSizeTooBig(MAX_BUFFER_SIZE)) } else { Ok(data) }
 }
 
 fn initialize_icmp_handle(addr: &IpAddr) -> Result<PingHandle, PingError> {
@@ -126,7 +126,7 @@ pub(crate) fn parse_raw_reply_status(status: u32) -> Result<(), PingError> {
         match ping_reply_error(status) {
             v @ PingError::OsError(_, _) => return Err(v),
             PingError::IpError(v) => v,
-            PingError::BadParameter(_) | PingError::IoPending => panic!("Dev bug!")
+            PingError::BadParameter(_) | PingError::DataSizeTooBig(_) | PingError::IoPending => panic!("Dev bug!")
         }
     };
     if ip_status == IpStatus::Success {

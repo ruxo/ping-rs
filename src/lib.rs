@@ -1,10 +1,12 @@
 //! Provide ICMP Echo (ping) functionality.
 
-extern crate core;
-
 mod windows_ping;
+mod linux_ping;
 
+use std::io;
 use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[allow(non_snake_case)]
 pub mod IpStatus {
@@ -62,10 +64,37 @@ pub enum PingError {
     BadParameter(&'static str),
     OsError(u32, String),
     IpError(IpStatus::Type),
-    IoPending
+    IoPending,
+
+    /// size of data buffer for ping is too big. The first parameter is the maximum allowed size.
+    DataSizeTooBig(u16),
 }
 
-pub type PingApiOutput = Result<PingReply, PingError>;
+impl From<io::Error> for PingError {
+    fn from(value: io::Error) -> Self {
+        if value.kind() == io::ErrorKind::WouldBlock { PingError::IoPending }
+        else { PingError::OsError(value.raw_os_error().unwrap_or(-1) as u32, String::default()) }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, PingError>;
+pub type PingApiOutput = Result<PingReply>;
 
 #[cfg(windows)]
-pub use windows_ping::*;
+use windows_ping as ping_mod;
+
+#[cfg(unix)]
+use linux_ping as ping_mod;
+
+/// Send ICMP Echo package (ping) to the given address.
+#[inline(always)]
+pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> PingApiOutput {
+    ping_mod::send_ping(addr, timeout, data, options)
+}
+
+/// Asynchronously schedule ICMP Echo package (ping) to the given address. Note that some parameter signatures are different
+/// from [`send_ping`] function, as the caller should manage those parameters' lifetime.
+#[inline(always)]
+pub async fn send_ping_async(addr: &IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<&PingOptions>) -> PingApiOutput {
+    ping_mod::send_ping_async(addr, timeout, data, options).await
+}
