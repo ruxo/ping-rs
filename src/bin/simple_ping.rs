@@ -11,15 +11,12 @@ const PING_OPTS: PingOptions = PingOptions { ttl: 128, dont_fragment: true };
 fn main() {
     //let addr = "127.0.0.1".parse().unwrap();
     // let addr = "209.17.116.106".parse().unwrap();
-    let addr = "209.17.116.160".parse().unwrap();
-    //let addr = "::1".parse().unwrap();
+    // let addr = "209.17.116.160".parse().unwrap();
+    let addr: IpAddr = "::1".parse().unwrap();
     let data = [8; 8];
-    let result = send_ping(&addr, TIMEOUT, &data, Some(&PING_OPTS));
 
-    println!("> Result = {:?}", result);
-
-    // sync_ping(&addr, &data);
-    // async_ping(&addr, Arc::new(&data));
+    sync_ping(&addr, &data);
+    //async_ping(&addr, Arc::new(&data));
 
     println!("Done.");
 }

@@ -3,6 +3,7 @@
 mod windows_ping;
 mod linux_ping;
 
+use std::error::Error;
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -73,7 +74,7 @@ pub enum PingError {
 impl From<io::Error> for PingError {
     fn from(value: io::Error) -> Self {
         if value.kind() == io::ErrorKind::WouldBlock { PingError::IoPending }
-        else { PingError::OsError(value.raw_os_error().unwrap_or(-1) as u32, String::default()) }
+        else { PingError::OsError(value.raw_os_error().unwrap_or(-1) as u32, value.to_string()) }
     }
 }
 
