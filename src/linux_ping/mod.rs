@@ -3,6 +3,7 @@
 mod v4;
 mod v6;
 mod icmp_header;
+mod ping_future;
 
 use std::future::Future;
 use std::io::Write;
@@ -16,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply, Result};
 use crate::linux_ping::icmp_header::{ICMP_HEADER_SIZE, IcmpEchoHeader};
+use crate::linux_ping::ping_future::PingFuture;
 
 const TOKEN_SIZE: usize = 24;
 
@@ -35,7 +37,7 @@ pub async fn send_ping_async(addr: &IpAddr, timeout: Duration, data: Arc<&[u8]>,
     };
     context.socket.set_nonblocking(true)?;
     context.ping()?;
-    PingFuture { context, waker: Mutex::new(None) }.await
+    PingFuture::new(context).await
 }
 
 // INTERNAL
@@ -45,7 +47,7 @@ fn validate_timeout(timeout: Duration) -> Result<Duration> {
     else { Ok(timeout) }
 }
 
-struct PingContext {
+pub(crate) struct PingContext {
     ident: u16,
     sequence: u16,
     destination: SocketAddr,
@@ -101,28 +103,6 @@ fn wait_reply<P: Proto>(my: &mut PingContext) -> Result<PingReply> {
     let last_ts = header.timestamp();
 
     Ok(PingReply { address: addr.as_socket().unwrap().ip(), rtt: ((get_timestamp() - last_ts) * 1000.) as u32 })
-}
-
-struct PingFuture {
-    context: PingContext,
-    waker: Mutex<Option<Waker>>,
-}
-
-impl Future for PingFuture {
-    type Output = PingApiOutput;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let reply = (self.context.wait_reply)(&mut self.context);
-        println!("Reply = {reply:?}");
-        match reply {
-            Err(PingError::IoPending) => {
-                println!("waiting..");
-                let mut waker = self.waker.lock().unwrap();
-                *waker = Some(cx.waker().clone());
-                Poll::Pending
-            },
-            _ => Poll::Ready(reply)
-        }
-    }
 }
 
 struct SocketConfig(Domain, Protocol);
