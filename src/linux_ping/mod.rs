@@ -11,13 +11,13 @@ use std::mem;
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply, Result};
 use crate::linux_ping::icmp_header::{ICMP_HEADER_SIZE, IcmpEchoHeader};
-use crate::linux_ping::ping_future::PingFuture;
+use crate::linux_ping::ping_future::{PingFuture, PollerContext};
 
 const TOKEN_SIZE: usize = 24;
 
@@ -27,7 +27,8 @@ pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<
         IpAddr::V6(_) => PingContext::new::<Ipv6Addr>(addr, timeout, data, options)?,
     };
     context.ping()?;
-    (context.wait_reply)(&mut context)
+    let f = context.wait_reply.read().unwrap();
+    f(&context.socket, context.start_ts)
 }
 
 pub async fn send_ping_async(addr: &IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<&PingOptions>) -> PingApiOutput {
@@ -47,6 +48,8 @@ fn validate_timeout(timeout: Duration) -> Result<Duration> {
     else { Ok(timeout) }
 }
 
+type WaitReplyType = Arc<RwLock<Box<dyn Fn(&Socket, Instant) -> Result<PingReply> + Send + Sync>>>;
+
 pub(crate) struct PingContext {
     ident: u16,
     sequence: u16,
@@ -54,7 +57,9 @@ pub(crate) struct PingContext {
     payload: Vec<u8>,
     socket: Socket,
 
-    wait_reply: fn(&mut PingContext) -> Result<PingReply>
+    start_ts: Instant,
+
+    wait_reply: WaitReplyType
 }
 
 const MTU: usize = 1500;
@@ -72,7 +77,8 @@ impl PingContext {
         let destination = SocketAddr::new(addr.clone(), 0);
         let process_id = std::process::id() as u16;
 
-        Ok(PingContext { ident: process_id, sequence: 0, destination, payload, socket, wait_reply: wait_reply::<P> })
+        Ok(PingContext { ident: process_id, sequence: 0, destination, payload, socket, start_ts: Instant::now(),
+            wait_reply: Arc::new(RwLock::new(Box::new(|s,t| wait_reply::<P>(s,t)))) })
     }
 
     fn ping(&mut self) -> Result<()> {
@@ -80,29 +86,23 @@ impl PingContext {
         set_request_data(&mut self.payload, self.ident, self.sequence);
 
         let addr: SockAddr = self.destination.into();
+        self.start_ts = Instant::now();
         let sent = self.socket.send_to(&self.payload, &addr)?;
         assert_eq!(sent, self.payload.len());
         Ok(())
     }
 }
 
-fn wait_reply<P: Proto>(my: &mut PingContext) -> Result<PingReply> {
+fn wait_reply<P: Proto>(socket: &Socket, start_ts: Instant) -> Result<PingReply> {
     let mut buffer: [MaybeUninit<u8>; MTU] = unsafe { MaybeUninit::uninit().assume_init() };
-    let (size, addr) = my.socket.recv_from(&mut buffer)?;
+    let (size, addr) = socket.recv_from(&mut buffer)?;
     debug_assert_ne!(size, 0);
     let reply_buffer = unsafe { mem::transmute::<_, [u8; MTU]>(buffer) };
-
-    // Leave this code for one day I can figure out how to work with RAW socket..
-    // let header = P::get_reply_header(&reply_buffer[..size])?;
-    // if header.r#type != P::ECHO_REPLY_TYPE || header.code != P::ECHO_REPLY_CODE { return Err(PingError::IpError(IpStatus::BadHeader)) }
-    // assert_eq!(header.ident(), self.ident);
 
     let header = IcmpEchoHeader::get_ref(&reply_buffer);
     if header.r#type != P::ECHO_REPLY_TYPE || header.code != P::ECHO_REPLY_CODE { return Err(PingError::IpError(IpStatus::BadHeader)) }
 
-    let last_ts = header.timestamp();
-
-    Ok(PingReply { address: addr.as_socket().unwrap().ip(), rtt: ((get_timestamp() - last_ts) * 1000.) as u32 })
+    Ok(PingReply { address: addr.as_socket().unwrap().ip(), rtt: (start_ts.elapsed().as_secs_f64() * 1000.) as u32 })
 }
 
 struct SocketConfig(Domain, Protocol);
@@ -144,7 +144,6 @@ fn set_request_data(data: &mut [u8], ident: u16, sequence: u16) {
     let header = IcmpEchoHeader::get_mut_ref(data);
     header.set_ident(ident);
     header.set_seq(sequence);
-    header.set_timestamp(get_timestamp());
     write_checksum(data);
 }
 
@@ -167,10 +166,6 @@ fn write_checksum(buffer: &mut [u8]) {
     IcmpEchoHeader::get_mut_ref(&buffer).set_checksum(sum);
 }
 
-fn get_timestamp() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
-}
-
 #[cfg(test)]
 mod test {
     use std::net::Ipv4Addr;
@@ -185,7 +180,7 @@ mod test {
 
         // Assert
         let payload = result.unwrap();
-        assert_eq!(payload.len(), 20);
+        assert_eq!(payload.len(), ICMP_HEADER_SIZE+4);
 
         assert_eq!(&payload[ICMP_HEADER_SIZE..], b"1234");
     }

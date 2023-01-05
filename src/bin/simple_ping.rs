@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 use futures::executor::block_on;
 use futures::future::join_all;
@@ -9,13 +10,12 @@ use ping_rs::*;
 const PING_OPTS: PingOptions = PingOptions { ttl: 128, dont_fragment: true };
 
 fn main() {
-    //let addr = "127.0.0.1".parse().unwrap();
-    // let addr = "209.17.116.106".parse().unwrap();
+    //let addr = "8.8.8.8".parse().unwrap();
     let addr = "209.17.116.160".parse().unwrap();
     //let addr: IpAddr = "::1".parse().unwrap();
     let data = [8; 8];
 
-    //sync_ping(&addr, &data);
+    sync_ping(&addr, &data);
     async_ping(&addr, Arc::new(&data));
 
     println!("Done.");
@@ -36,6 +36,7 @@ fn async_ping(addr: &IpAddr, data: Arc<&[u8]>) {
 
     let tasks = (1..=5).map(|i| {
         let d = data.clone();
+        thread::sleep(Duration::from_millis(30));
         async move {
             (i, send_ping_async(&addr, TIMEOUT, d, Some(&PING_OPTS)).await)
         }

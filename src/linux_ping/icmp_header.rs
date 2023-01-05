@@ -1,6 +1,6 @@
 use paste::paste;
 
-pub(crate) const ICMP_HEADER_SIZE: usize = 16;
+pub(crate) const ICMP_HEADER_SIZE: usize = 8;
 
 #[repr(C)]
 pub(crate) struct IcmpEchoHeader {
@@ -11,8 +11,6 @@ pub(crate) struct IcmpEchoHeader {
 
     ident: u16,
     seq: u16,
-
-    timestamp: [u8; 8],
 }
 
 macro_rules! simple_property {
@@ -39,18 +37,15 @@ impl IcmpEchoHeader {
     simple_property![u16| checksum];
     simple_property![u16| ident];
     simple_property![u16| seq];
-    
-    pub(crate) fn timestamp(&self) -> f64 { f64::from_be_bytes(self.timestamp) }
-    pub(crate) fn set_timestamp(&mut self, sending_ts: f64) { self.timestamp = sending_ts.to_be_bytes() }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::linux_ping::icmp_header::IcmpEchoHeader;
+    use crate::linux_ping::icmp_header::{ICMP_HEADER_SIZE, IcmpEchoHeader};
 
     #[test]
     fn test_encode(){
-        let mut buffer = [0; 16];
+        let mut buffer = [0; ICMP_HEADER_SIZE];
 
         // Act
         let header = IcmpEchoHeader::get_mut_ref(&mut buffer);
@@ -59,9 +54,6 @@ mod test {
         header.set_checksum(3);
         header.set_ident(4);
         header.set_seq(5);
-
-        let ts = 6f64;
-        header.set_timestamp(ts);
 
         // Assert
         assert_eq!(buffer[0], 1); // type
@@ -72,9 +64,6 @@ mod test {
         assert_eq!(buffer[5], 4);
         assert_eq!(buffer[6], 0); // sequence
         assert_eq!(buffer[7], 5);
-
-        let ts_bytes = ts.to_be_bytes();
-        assert_eq!(buffer[8..], ts_bytes);
     }
 
     #[test]
@@ -90,7 +79,5 @@ mod test {
         assert_eq!(header.checksum(), 3);
         assert_eq!(header.ident(), 4);
         assert_eq!(header.seq(), 5);
-
-        assert_eq!(header.timestamp(), 6.);
     }
 }
