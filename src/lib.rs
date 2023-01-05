@@ -3,7 +3,6 @@
 mod windows_ping;
 mod linux_ping;
 
-use std::error::Error;
 use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -68,7 +67,7 @@ pub enum PingError {
     IoPending,
 
     /// size of data buffer for ping is too big. The first parameter is the maximum allowed size.
-    DataSizeTooBig(u16),
+    DataSizeTooBig(usize),
 }
 
 impl From<io::Error> for PingError {

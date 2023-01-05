@@ -5,19 +5,16 @@ mod v6;
 mod icmp_header;
 mod ping_future;
 
-use std::future::Future;
 use std::io::Write;
 use std::mem;
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock};
-use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply, Result};
 use crate::linux_ping::icmp_header::{ICMP_HEADER_SIZE, IcmpEchoHeader};
-use crate::linux_ping::ping_future::{PingFuture, PollerContext};
+use crate::linux_ping::ping_future::{PingFuture};
 
 const TOKEN_SIZE: usize = 24;
 
@@ -28,7 +25,10 @@ pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<
     };
     context.ping()?;
     let f = context.wait_reply.read().unwrap();
-    f(&context.socket, context.start_ts)
+    match f(&context.socket, context.start_ts) {
+        Err(PingError::IoPending) => Err(PingError::IpError(IpStatus::TimedOut)),
+        v => v
+    }
 }
 
 pub async fn send_ping_async(addr: &IpAddr, timeout: Duration, data: Arc<&[u8]>, options: Option<&PingOptions>) -> PingApiOutput {
@@ -56,6 +56,7 @@ pub(crate) struct PingContext {
     destination: SocketAddr,
     payload: Vec<u8>,
     socket: Socket,
+    timeout: Duration,
 
     start_ts: Instant,
 
@@ -77,7 +78,7 @@ impl PingContext {
         let destination = SocketAddr::new(addr.clone(), 0);
         let process_id = std::process::id() as u16;
 
-        Ok(PingContext { ident: process_id, sequence: 0, destination, payload, socket, start_ts: Instant::now(),
+        Ok(PingContext { ident: process_id, sequence: 0, destination, payload, socket, timeout, start_ts: Instant::now(),
             wait_reply: Arc::new(RwLock::new(Box::new(|s,t| wait_reply::<P>(s,t)))) })
     }
 
