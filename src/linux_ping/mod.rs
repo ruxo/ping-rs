@@ -26,7 +26,7 @@ pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<
     context.ping()?;
     let f = context.wait_reply.read().unwrap();
     match f(&context.socket, context.start_ts) {
-        Err(PingError::IoPending) => Err(PingError::IpError(IpStatus::TimedOut)),
+        Err(PingError::IoPending) => Err(PingError::TimedOut),
         v => v
     }
 }

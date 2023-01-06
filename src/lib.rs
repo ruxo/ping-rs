@@ -1,4 +1,5 @@
-//! Provide ICMP Echo (ping) functionality.
+//! Provide ICMP Echo (ping) functionality for both Windows and Linux.
+//!
 
 mod windows_ping;
 mod linux_ping;
@@ -27,7 +28,6 @@ pub mod IpStatus {
     pub const HardwareError: Type = 11000 + 8;
     pub const PacketTooBig: Type = 11000 + 9;
     pub const TimedOut: Type = 11000 + 10;
-    //  BadRequest: Type = 11000 + 11;
     pub const BadRoute: Type = 11000 + 12;
 
     pub const TtlExpired: Type = 11000 + 13;
@@ -35,7 +35,6 @@ pub mod IpStatus {
 
     pub const ParameterProblem: Type = 11000 + 15;
     pub const SourceQuench: Type = 11000 + 16;
-    //OptionTooBig: Type = 11000 + 17;
     pub const BadDestination: Type = 11000 + 18;
 
     pub const DestinationUnreachable: Type = 11000 + 40;
@@ -64,6 +63,11 @@ pub enum PingError {
     BadParameter(&'static str),
     OsError(u32, String),
     IpError(IpStatus::Type),
+
+    /// Ping timed out
+    TimedOut,
+
+    /// I/O async pending
     IoPending,
 
     /// size of data buffer for ping is too big. The first parameter is the maximum allowed size.

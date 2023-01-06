@@ -55,7 +55,7 @@ impl PollerContext {
             }
         }
         if responded == 1 { Ok(()) }
-        else { Err(PingError::IpError(IpStatus::TimedOut)) }
+        else { Err(PingError::TimedOut) }
     }
 }
 

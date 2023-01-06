@@ -13,7 +13,7 @@ use windows::core::PSTR;
 use windows::Win32::Foundation::{ERROR_IO_PENDING, GetLastError, HANDLE};
 use windows::Win32::NetworkManagement::IpHelper::{Icmp6CreateFile, IcmpCloseHandle, IcmpCreateFile, IcmpHandle, IP_OPTION_INFORMATION, IP_STATUS_BASE};
 use windows::Win32::System::Diagnostics::Debug::*;
-use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply};
+use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply, Result};
 
 pub(crate) const MAX_UDP_PACKET: usize = 0xFFFF + 256; // size of ICMP_ECHO_REPLY * 2 + ip header info
 
@@ -82,11 +82,11 @@ impl<'a> Drop for PingHandle<'a> {
 
 /// Artificial constraint due to win32 api limitations.
 const MAX_BUFFER_SIZE: usize = 65500;
-fn validate_data_buffer(data: &[u8]) -> Result<&[u8], PingError> {
+fn validate_data_buffer(data: &[u8]) -> Result<&[u8]> {
     if data.len() > MAX_BUFFER_SIZE { Err(PingError::DataSizeTooBig(MAX_BUFFER_SIZE)) } else { Ok(data) }
 }
 
-fn initialize_icmp_handle(addr: &IpAddr) -> Result<PingHandle, PingError> {
+fn initialize_icmp_handle(addr: &IpAddr) -> Result<PingHandle> {
     unsafe {
         let handle = match addr {
             IpAddr::V4(_) => IcmpCreateFile().map(|h| PingHandle(addr, h)),
@@ -98,7 +98,7 @@ fn initialize_icmp_handle(addr: &IpAddr) -> Result<PingHandle, PingError> {
 
 const DONT_FRAGMENT_FLAG: u8 = 2;
 pub(crate) fn echo(destination: &dyn IcmpEcho, handle: IcmpHandle, event: Option<HANDLE>, buffer: &[u8], reply_buffer: *mut u8, timeout: Duration,
-                      options: Option<&PingOptions>) -> Result<*mut u8, PingError> {
+                      options: Option<&PingOptions>) -> Result<*mut u8> {
     let request_data = buffer.as_ptr() as *const c_void;
     let ip_options = IP_OPTION_INFORMATION {
         Ttl: options.clone().map(|v| v.ttl).unwrap_or(128),
@@ -120,19 +120,15 @@ pub(crate) fn echo(destination: &dyn IcmpEcho, handle: IcmpHandle, event: Option
     }
 }
 
-pub(crate) fn parse_raw_reply_status(status: u32) -> Result<(), PingError> {
-    let ip_status = if status as IpStatus::Type == IpStatus::Success { IpStatus::Success }
+fn parse_raw_reply_status(status: u32) -> Result<()> {
+    if status as IpStatus::Type == IpStatus::Success { Ok(()) }
     else {
         match ping_reply_error(status) {
             v @ PingError::OsError(_, _) => return Err(v),
-            PingError::IpError(v) => v,
-            PingError::BadParameter(_) | PingError::DataSizeTooBig(_) | PingError::IoPending => panic!("Dev bug!")
+            PingError::IpError(v) => Err(ping_reply_error(v)),
+            PingError::TimedOut => Err(PingError::TimedOut),
+            _ => panic!("Dev bug!")
         }
-    };
-    if ip_status == IpStatus::Success {
-        Ok(())
-    } else {
-        Err(ping_reply_error(ip_status))
     }
 }
 
@@ -147,7 +143,8 @@ fn ping_reply_error(status_code: u32) -> PingError {
             unsafe { s.to_string().unwrap() }
         })
     } else {
-        PingError::IpError(status_code)
+        if status_code == IpStatus::TimedOut { PingError::TimedOut }
+        else { PingError::IpError(status_code) }
     }
 }
 
