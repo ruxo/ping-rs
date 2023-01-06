@@ -3,6 +3,11 @@ name = "ping-rs"
 authors = ["Ruxo Zheng <me@ruxoz.net>"]
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Provide ICMP Echo (ping) functionality for both Windows and Linux"
+documentation = "https://github.com/ruxo/ping-rs"
+repository = "https://github.com/ruxo/ping-rs"
+homepage = "https://github.com/ruxo/ping-rs"
 
 [dependencies]
 futures = "0.3"
