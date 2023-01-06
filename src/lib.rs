@@ -1,7 +1,7 @@
 //! Provide ICMP Echo (ping) functionality for both Windows and Linux. This library does not need root/admin privilege for pinging.
 //! It provides sync and async ping functions: [`send_ping`] and [`send_ping_async`].
 //!
-//! Linux version still does not support
+//! Linux version still does not support "Do not Fragment" flag yet.
 //!
 //! # Usage Example
 //!
