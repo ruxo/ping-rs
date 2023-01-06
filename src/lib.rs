@@ -1,5 +1,53 @@
-//! Provide ICMP Echo (ping) functionality for both Windows and Linux.
+//! Provide ICMP Echo (ping) functionality for both Windows and Linux. This library does not need root/admin privilege for pinging.
+//! It provides sync and async ping functions: [`send_ping`] and [`send_ping_async`].
 //!
+//! Linux version still does not support
+//!
+//! # Usage Example
+//!
+//! An example is also provided in `/bin/sample_ping.rs`
+//!
+//! ## Synchronous ping
+//!
+//! ```rust,no_run
+//! use std::time::Duration;
+//!
+//! fn main(){
+//!     let addr = "8.8.8.8".parse().unwrap();
+//!     let data = [1,2,3,4];  // ping data
+//!     let timeout = Duration::from_secs(1);
+//!     let options = ping_rs::PingOptions { ttl: 128, dont_fragment: true };
+//!     let result = ping_rs::send_ping(&addr, timeout, &data, Some(&options));
+//!     match result {
+//!         Ok(reply) => println!("Reply from {}: bytes={} time={}ms TTL={}", reply.address, data.len(), reply.rtt, options.ttl),
+//!         Err(e) => println!("{:?}", e)
+//!     }
+//! }
+//! ```
+//!
+//! ## Asynchronous ping
+//!
+//! Note that `futures` crate is used in this example. Also, data passed in the function has to be wrapped with `Arc` because in Windows' implementation
+//! the address of this data will be passed to Win32 API.
+//!
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//!
+//! fn main(){
+//!     let addr = "8.8.8.8".parse().unwrap();
+//!     let data = [1,2,3,4];  // ping data
+//!     let data_arc = Arc::new(&data[..]);
+//!     let timeout = Duration::from_secs(1);
+//!     let options = ping_rs::PingOptions { ttl: 128, dont_fragment: true };
+//!     let future = ping_rs::send_ping_async(&addr, timeout, data_arc, Some(&options));
+//!     let result = futures::executor::block_on(future);
+//!     match result {
+//!         Ok(reply) => println!("Reply from {}: bytes={} time={}ms TTL={}", reply.address, data.len(), reply.rtt, options.ttl),
+//!         Err(e) => println!("{:?}", e)
+//!     }
+//! }
+//! ```
 
 mod windows_ping;
 mod linux_ping;
@@ -9,6 +57,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Contains constant values represent general errors.
 #[allow(non_snake_case)]
 pub mod IpStatus {
     #![allow(non_upper_case_globals)]
@@ -50,18 +99,33 @@ pub mod IpStatus {
 
 #[derive(Debug, Clone)]
 pub struct PingOptions {
+    /// Package TTL
     pub ttl: u8,
+
+    /// Socket's Dont Fragment
     pub dont_fragment: bool
 }
 
+/// Ping reply contains the destination address (from ICMP reply) and Round-Trip Time
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub struct PingReply { address: IpAddr, rtt: u32, }
+pub struct PingReply {
+    /// Destination address from ICMP reply
+    pub address: IpAddr,
+    /// Round-Trip Time in milliseconds
+    pub rtt: u32,
+}
 
+/// Ping errors
 #[derive(Debug, Clone)]
 pub enum PingError {
+    /// Bad request parameters
     BadParameter(&'static str),
+
+    /// Unspecific OS errors
     OsError(u32, String),
+
+    /// General Ping errors
     IpError(IpStatus::Type),
 
     /// Ping timed out

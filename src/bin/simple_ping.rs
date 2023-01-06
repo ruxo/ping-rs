@@ -1,3 +1,22 @@
+use std::sync::Arc;
+use std::time::Duration;
+use ping_rs;
+
+fn main(){
+    let addr = "8.8.8.8".parse().unwrap();
+    let data = [1,2,3,4];  // ping data
+    let data_arc = Arc::new(&data[..]);
+    let timeout = Duration::from_secs(1);
+    let options = ping_rs::PingOptions { ttl: 128, dont_fragment: true };
+    let future = ping_rs::send_ping_async(&addr, timeout, data_arc, Some(&options));
+    let result = futures::executor::block_on(future);
+    match result {
+        Ok(reply) => println!("Reply from {}: bytes={} time={}ms TTL={}", reply.address, data.len(), reply.rtt, options.ttl),
+        Err(e) => println!("{:?}", e)
+    }
+}
+
+/*
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::thread;
@@ -47,3 +66,5 @@ fn async_ping(addrs: &[IpAddr], data: Arc<&[u8]>) {
         }
     }));
 }
+
+ */
