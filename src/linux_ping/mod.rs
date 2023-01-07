@@ -125,7 +125,7 @@ fn create_socket<P: Proto>() -> Result<Socket> {
 }
 
 fn make_data<P: Proto>(data: &[u8]) -> Result<Vec<u8>> {
-    if data.len() > TOKEN_SIZE { return Err(PingError::DataSizeTooBig(TOKEN_SIZE as u16)); }
+    if data.len() > TOKEN_SIZE { return Err(PingError::DataSizeTooBig(TOKEN_SIZE)); }
 
     let mut buffer = vec![0; ICMP_HEADER_SIZE + data.len()];
     let mut payload = &mut buffer[ICMP_HEADER_SIZE..];

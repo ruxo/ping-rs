@@ -14,7 +14,7 @@ use mio::{
     unix::SourceFd,
 };
 use crate::linux_ping::{PingContext};
-use crate::{IpStatus, PingApiOutput, PingError, Result};
+use crate::{PingApiOutput, PingError, Result};
 
 pub(crate) struct PollerContext {
     context: PingContext,

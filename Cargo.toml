@@ -1,7 +1,7 @@
 [package]
 name = "ping-rs"
 authors = ["Ruxo Zheng <me@ruxoz.net>"]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Provide ICMP Echo (ping) functionality for both Windows and Linux"
