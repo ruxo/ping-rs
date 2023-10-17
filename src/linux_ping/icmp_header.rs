@@ -25,8 +25,8 @@ macro_rules! simple_property {
 impl IcmpEchoHeader {
     #![allow(dead_code)]
 
-    pub(crate) fn get_mut_ref(be_buffer: &[u8]) -> &mut IcmpEchoHeader {
-        let header = be_buffer.as_ptr() as *mut IcmpEchoHeader;
+    pub(crate) fn get_mut_ref(be_buffer: &mut [u8]) -> &mut IcmpEchoHeader {
+        let header = be_buffer.as_mut_ptr() as *mut IcmpEchoHeader;
         unsafe { &mut *header }
     }
     pub(crate) fn get_ref(be_buffer: &[u8]) -> &IcmpEchoHeader {
