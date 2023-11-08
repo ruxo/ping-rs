@@ -132,7 +132,7 @@ fn make_data<P: Proto>(data: &[u8]) -> Result<Vec<u8>> {
     if let Err(_) = payload.write(&data){
         return Err(PingError::BadParameter("data"));
     }
-    let header = IcmpEchoHeader::get_mut_ref(&buffer);
+    let header = IcmpEchoHeader::get_mut_ref(&mut buffer);
 
     header.r#type = P::ECHO_REQUEST_TYPE;
     header.code = P::ECHO_REQUEST_CODE;
@@ -164,7 +164,7 @@ fn write_checksum(buffer: &mut [u8]) {
 
     let sum = !sum as u16;
 
-    IcmpEchoHeader::get_mut_ref(&buffer).set_checksum(sum);
+    IcmpEchoHeader::get_mut_ref(buffer).set_checksum(sum);
 }
 
 #[cfg(test)]
