@@ -7,17 +7,21 @@ pub(crate) struct IcmpEchoHeader {
     pub r#type: u8,
     pub code: u8,
 
-    checksum: u16,
+    checksum: [u8;2],
 
-    ident: u16,
-    seq: u16,
+    ident: [u8;2],
+    seq: [u8;2],
 }
 
 macro_rules! simple_property {
     ($type:ty | $name:ident) => {
         paste! {
-            pub(crate) fn $name(&self) -> $type { <$type>::from_be(self.$name) }
-            pub(crate) fn [<set_ $name>](&mut self, $name: $type) { self.$name = $name.to_be() }
+            pub(crate) fn $name(&self) -> $type {
+                $type::from_be_bytes(self.$name)
+            }
+            pub(crate) fn [<set_ $name>](&mut self, $name: $type) { 
+                self.$name = $name.to_be_bytes();
+            }
         }
     };
 }
@@ -25,8 +29,8 @@ macro_rules! simple_property {
 impl IcmpEchoHeader {
     #![allow(dead_code)]
 
-    pub(crate) fn get_mut_ref(be_buffer: &[u8]) -> &mut IcmpEchoHeader {
-        let header = be_buffer.as_ptr() as *mut IcmpEchoHeader;
+    pub(crate) fn get_mut_ref(be_buffer: &mut [u8]) -> &mut IcmpEchoHeader {
+        let header = be_buffer.as_mut_ptr() as *mut IcmpEchoHeader;
         unsafe { &mut *header }
     }
     pub(crate) fn get_ref(be_buffer: &[u8]) -> &IcmpEchoHeader {
