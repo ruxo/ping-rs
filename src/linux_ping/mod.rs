@@ -16,8 +16,6 @@ use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply, Result};
 use crate::linux_ping::icmp_header::{ICMP_HEADER_SIZE, IcmpEchoHeader};
 use crate::linux_ping::ping_future::{PingFuture};
 
-const TOKEN_SIZE: usize = 24;
-
 pub fn send_ping(addr: &IpAddr, timeout: Duration, data: &[u8], options: Option<&PingOptions>) -> Result<PingReply> {
     let mut context = match addr {
         IpAddr::V4(_) => PingContext::new::<Ipv4Addr>(addr, timeout, data, options)?,
@@ -125,8 +123,6 @@ fn create_socket<P: Proto>() -> Result<Socket> {
 }
 
 fn make_data<P: Proto>(data: &[u8]) -> Result<Vec<u8>> {
-    if data.len() > TOKEN_SIZE { return Err(PingError::DataSizeTooBig(TOKEN_SIZE)); }
-
     let mut buffer = vec![0; ICMP_HEADER_SIZE + data.len()];
     let mut payload = &mut buffer[ICMP_HEADER_SIZE..];
     if let Err(_) = payload.write(&data){
