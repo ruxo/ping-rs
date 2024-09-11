@@ -11,7 +11,7 @@ use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, PathMtuDiscoveringModeV4, Protocol, SockAddr, Socket, Type};
 use crate::{IpStatus, PingApiOutput, PingError, PingOptions, PingReply, Result};
 use crate::linux_ping::icmp_header::{ICMP_HEADER_SIZE, IcmpEchoHeader};
 use crate::linux_ping::ping_future::{PingFuture};
@@ -68,8 +68,12 @@ impl PingContext {
         let payload = make_data::<P>(data)?;
 
         let socket = create_socket::<P>()?;
-        if let Some(v) = options.map(|o| o.ttl) {
-            socket.set_ttl(v as u32)?;
+        if let Some(options) = options {
+            socket.set_ttl(options.ttl as u32)?;
+
+            if options.dont_fragment {
+                socket.set_mtu_discover(PathMtuDiscoveringModeV4::DO)?;
+            }
         }
         socket.set_read_timeout(Some(timeout))?;
 
